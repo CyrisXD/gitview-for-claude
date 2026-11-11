@@ -1,0 +1,21 @@
+{
+  "name": "gitview",
+  "version": "0.1.0",
+  "description": "A live branch and commit graph of the session's repository in a side pane, with commit details, diffs and git actions",
+  "author": {
+    "name": "CyrisXD",
+    "url": "https://github.com/CyrisXD"
+  },
+  "license": "MIT",
+  "keywords": [
+    "git",
+    "graph",
+    "history",
+    "branches",
+    "commits",
+    "diff"
+  ],
+  "types": "./types/index.d.ts",
+  "homepage": "https://github.com/CyrisXD/gitview-for-claude",
+  "repository": "https://github.com/CyrisXD/gitview-for-claude"
+}

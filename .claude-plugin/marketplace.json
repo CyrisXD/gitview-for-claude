@@ -1,0 +1,14 @@
+{
+  "name": "gitview",
+  "owner": {
+    "name": "CyrisXD",
+    "url": "https://github.com/CyrisXD"
+  },
+  "description": "Gitview: a live commit graph pane for Claude Code",
+  "plugins": [
+    {
+      "name": "gitview",
+      "source": "./"
+    }
+  ]
+}
