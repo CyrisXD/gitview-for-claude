@@ -92,6 +92,21 @@ export async function loadGraph(run: Run, limit: number, only: string | null = n
   }
 }
 
+// Whether the history needs reading again: every ref and where it points, the remotes, the stash
+// list, the working tree, HEAD and any stopped operation. Far cheaper than log --topo-order --all.
+export async function fingerprint(run: Run): Promise<string> {
+  const outs = await Promise.all([
+    run(git('for-each-ref', '--format=%(objectname) %(refname)')),
+    run(git('remote')),
+    run(git('stash', 'list', '--format=%H')),
+    run(git('status', '--porcelain')),
+    run(git('symbolic-ref', '-q', 'HEAD')),
+    run(git('rev-parse', 'HEAD')),
+    ...OPERATIONS.map(([, ref]) => run(git('rev-parse', '-q', '--verify', ref))),
+  ])
+  return outs.map(r => `${r.exitCode}:${r.stdout}`).join('\0')
+}
+
 // `git diff --name-status -z` and `--numstat -z`, joined by path.
 export function parseChanges(nameStatus: string, numstat: string): FileChange[] {
   const files: FileChange[] = []

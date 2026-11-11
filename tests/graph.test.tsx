@@ -66,6 +66,7 @@ function fakeGit(on: On, log: () => string) {
   on('process.run', (_, e) => {
     const a = e.argv.join(' ')
     if (a.includes(' log ')) return ok(log())
+    if (a.includes('%(objectname)')) return ok(log()) // the poll's fingerprint moves with the history
     if (a.includes('stash list')) return ok(STASH)
     if (a.includes('status --porcelain')) return ok(' M src/app.ts\n')
     if (a.includes('rev-parse HEAD')) return ok('mmmmmmm1\n')

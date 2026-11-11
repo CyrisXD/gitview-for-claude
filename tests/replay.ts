@@ -39,10 +39,11 @@ export function replay(on: any, fx: Fixture, slow?: { clock: { sleep(ms: number)
       log.missing.push(`state ${log.state}: ${e.argv.join(' ')}`)
       return value({ exitCode: 128, stdout: '', stderr: 'not recorded' })
     }
-    log.ran.push(e.argv.join(' '))
+    log.ran.push(e.argv.filter(a => a !== '--end-of-options').join(' '))
     const st = fx.steps[log.step]
     const want = st?.argv[log.cmd]
-    if (!st || !want || JSON.stringify(want) !== key) {
+    // Recordings made before ref names got --end-of-options have their commands without it.
+    if (!st || !want || (JSON.stringify(want) !== key && JSON.stringify(want) !== JSON.stringify(e.argv.filter(a => a !== '--end-of-options')))) {
       log.unexpected.push(e.argv.join(' '))
       return value({ exitCode: 1, stdout: '', stderr: 'unexpected command' })
     }

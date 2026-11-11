@@ -3,7 +3,8 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { groupsFor } from '../hooks/actions'
+import { describe, groupsFor } from '../hooks/actions'
+import { badges } from '../hooks/graph'
 import { parseLog } from '../hooks/graph'
 
 // A typed /gitview; the rest of a real command.run input is left out.
@@ -21,7 +22,7 @@ const LOG =
 
 // A repository whose HEAD can be moved under the pane; every command is kept.
 function repo(on: On) {
-  const s = { head: 'mmmmmmm1', reads: [] as string[][], ran: [] as string[] }
+  const s = { head: 'mmmmmmm1', status: '', files: '', reads: [] as string[][], ran: [] as string[] }
   on('command.register', () => ({ value: { command: 'gitview' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.toast', () => ({ value: undefined }))
@@ -37,6 +38,8 @@ function repo(on: On) {
     if (a.endsWith(' remote')) return ok('origin\n')
     if (a.includes('symbolic-ref')) return ok('main\n')
     if (a.includes(' show -s ')) return ok('Ada\x1fa@b.c\x1fdate\x1f\x1fFirst')
+    if (a.includes('status --porcelain')) return ok(s.status)
+    if (a.includes('--name-status')) return ok(s.files)
     return ok('')
   })
   return s
@@ -89,7 +92,7 @@ test('a branch synced with one remote is deleted on that remote, not the default
   const g = groupsFor(c!, { branch: 'main', headHash: 'mmmmmmm1', remotes: ['origin', 'upstream'], localBranches: ['main', 'feature'] })
   const del = g.flatMap(x => x.actions).find(a => a.id === 'branch:feature:delete-remote')!
   expect(del.label).toBe('Delete on upstream')
-  expect(del.run!('', '')).toEqual([['push', 'upstream', '--delete', 'feature']])
+  expect(del.run!('', '')).toEqual([['push', 'upstream', '--delete', '--end-of-options', 'feature']])
 })
 
 test('background reads: never two at once, none while the pane is closed, no index lock', async ($, on) => {
@@ -128,4 +131,66 @@ test('background reads: never two at once, none while the pane is closed, no ind
   const closed = logs
   await clock.advance(30_000)
   expect(logs).toBe(closed)
+})
+
+test('a hard reset stops if files changed since it was shown', async ($, on) => {
+  const s = repo(on)
+  await $.command.run(OPEN)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'c:ccccccc1' })
+  await pick(ui, 'ccccccc1', 'commit:reset')
+  s.status = ' M src/app.ts\n' // Claude edits a file; no branch moves
+  await ui.press({ key: 'run:commit:reset' })
+  expect(await ui.find({ type: 'Text', text: /repository changed since this was shown/ })).toBeDefined()
+  expect(s.ran).toEqual([])
+  await ui.unmount()
+})
+
+test('an opened commit draws at most 100 files and says how many more', async ($, on) => {
+  const s = repo(on)
+  s.files = Array.from({ length: 250 }, (_, i) => `M\0f${i}.ts\0`).join('')
+  await $.command.run(OPEN)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'c:ccccccc1' })
+  expect(await ui.find({ type: 'Text', text: /250 files changed/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /150 more not shown/ })).toBeDefined()
+  expect(await ui.find({ key: 'f:f99.ts' })).toBeDefined()
+  expect(await ui.find({ key: 'f:f100.ts' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('names from the repository go after --end-of-options, which the confirm text leaves out', async () => {
+  const [c] = parseLog(row('ccccccc1', '', 'tag: -f, origin/fix', 'Odd names'))
+  const ctx = { branch: 'main', headHash: 'mmmmmmm1', remotes: ['origin'], localBranches: ['main', 'origin/fix'] }
+  const all = groupsFor(c!, ctx).flatMap(g => g.actions)
+  const del = all.find(a => a.id === 'tag:-f:delete')!
+  expect(del.run!('', '')).toEqual([['tag', '-d', '--end-of-options', '-f']])
+  expect(describe(del.run!('', ''))).toBe('git tag -d -f')
+  // A local branch literally called origin/fix is a branch, so nothing offers to delete it on origin.
+  expect(badges(c!, ctx.remotes, ctx.localBranches).map(b => b.kind)).toEqual(['tag', 'branch'])
+  expect(all.some(a => a.id === 'remote:origin/fix:delete')).toBe(false)
+})
+
+test('the poll reads the full history only when the fingerprint moves', async ($, on) => {
+  const clock = mock.clock(on)
+  let refs = 'a refs/heads/main\n'
+  let logs = 0
+  on('command.register', () => ({ value: { command: 'gitview' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('ui.panes', () => ({ value: [{ id: 'gitview', title: 'Gitview', isShown: true, isFocused: false, isPlaced: true }] }))
+  on('process.run', (_, e) => {
+    const a = e.argv.join(' ')
+    if (a.includes(' log ')) return (logs++, ok(LOG))
+    if (a.includes('%(objectname)')) return ok(refs)
+    return ok('')
+  })
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
+  await clock.advance(10_500) // first poll: no print yet, so it reads
+  const settled = logs
+  await clock.advance(30_000) // three polls, nothing moved
+  expect(logs).toBe(settled)
+  refs = 'b refs/heads/main\n' // a commit lands
+  await clock.advance(10_000)
+  expect(logs).toBe(settled + 1)
 })

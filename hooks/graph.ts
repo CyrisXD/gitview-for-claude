@@ -160,7 +160,8 @@ export type Badge = { label: string; kind: 'head' | 'branch' | 'remote' | 'tag' 
 
 // Badges for a row: a local branch and its remote twin on
 // the same commit show as one badge (isSynced); remote HEADs are dropped.
-export function badges(c: Commit, remotes: string[]): Badge[] {
+// `locals`: the local branch names, so a local branch called origin/x is not taken for a remote one.
+export function badges(c: Commit, remotes: string[], locals: string[] = []): Badge[] {
   if (c.kind === 'stash') return c.refs.map(label => ({ label, kind: 'stash' as const, isSynced: false }))
   const isRemote = (name: string) => remotes.some(r => name.startsWith(`${r}/`))
   const names = c.refs.map(r => r.replace(/^HEAD -> /, ''))
@@ -172,7 +173,7 @@ export function badges(c: Commit, remotes: string[]): Badge[] {
       continue
     }
     const name = ref.replace(/^HEAD -> /, '')
-    if (isRemote(name)) {
+    if (isRemote(name) && !locals.includes(name)) {
       const short = name.slice(name.indexOf('/') + 1)
       if (short === 'HEAD' || names.includes(short)) continue
       out.push({ label: name, kind: 'remote', isSynced: false })

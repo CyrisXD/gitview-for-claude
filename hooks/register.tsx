@@ -5,7 +5,7 @@ import type { ActionResult, Commit, Details, FileChange, FileDiff, GraphData, Pe
 import { describe, groupsFor } from './actions'
 import { DESC_MIN, MIN } from './columns'
 import type { Action } from './actions'
-import { emptyDetails, loadDetails, loadDiff, loadGraph } from './git'
+import { emptyDetails, fingerprint, loadDetails, loadDiff, loadGraph } from './git'
 import type { Run } from './git'
 import { ROW_PX, SPACING, badgeStyle, badgeSvg, badges, graphWidth, isHeadCommit, laneColor, layout, rowSvg, WORKING } from './graph'
 import type { Spacing } from './graph'
@@ -20,6 +20,8 @@ const BUDGET = 90_000
 const HOVER = '#8987811f' // the app's warm grey, faint: a row under the pointer
 const ROW_FILL = '\u2003'.repeat(120) // em spaces: wider than any pane, clipped to the row
 const NONE = '-' // a group dropdown's first entry: its title, no action
+// Files drawn in an opened commit: every one would push a big commit's drawing past what the app shows.
+const MAX_FILES = 100
 
 const data = atom(
   { plugin: 'gitview', key: 'data' } as const,
@@ -55,6 +57,16 @@ export const matches = (c: Commit, q: string) => {
   return q.toLowerCase().split(/\s+/).filter(Boolean).every(w => hay.includes(w))
 }
 
+// A value's JSON, once per value: $.state hands back the same object while it is unchanged, so a
+// scroll tick does not serialize every commit (and a 90 KB diff) again just to find its drawing.
+const keyCache = new WeakMap<object, string>()
+const keyOf = (v: unknown): string => {
+  if (!v || typeof v !== 'object') return JSON.stringify(v) ?? 'undefined'
+  let k = keyCache.get(v)
+  if (k === undefined) keyCache.set(v, (k = JSON.stringify(v)))
+  return k
+}
+
 // Every scroll tick asks for the pane again, and building it (each row drawn and measured)
 // made scrolling lag. The last drawing is kept with the values it was drawn from, and
 // handed back while they read the same: comparing them costs far less than drawing.
@@ -86,7 +98,10 @@ let queued: Promise<boolean> | null = null
 let queuedForce = false
 function refresh($: EngineInterface, force = false): Promise<boolean> {
   if (!reading) {
-    reading = load($, force).finally(() => (reading = null))
+    // load writes state too; a failed write must not reject every caller (and the poll) with it.
+    reading = load($, force)
+      .catch(() => false)
+      .finally(() => (reading = null))
     return reading
   }
   queuedForce ||= force
@@ -103,7 +118,34 @@ function refresh($: EngineInterface, force = false): Promise<boolean> {
 // Background reads skip a closed pane; /gitview reads again as it opens.
 const isPaneUp = async ($: EngineInterface) => (await $.ui.panes()).some(p => p.id === PANE)
 
+// The poll and Bash calls read a cheap fingerprint first (refs, stashes, status, HEAD) and the full
+// history (log --topo-order, slow on a big repository) only when it moved. One check at a time;
+// asks during one fold into a single check after it.
+let lastPrint = ''
+let checking = false
+let recheck = false
+async function check($: EngineInterface) {
+  if (checking) {
+    recheck = true
+    return
+  }
+  checking = true
+  try {
+    do {
+      recheck = false
+      if (!(await isPaneUp($))) return
+      const fp = await fingerprint(runner($))
+      if (fp === lastPrint) continue
+      await refresh($)
+      lastPrint = fp
+    } while (recheck)
+  } finally {
+    checking = false
+  }
+}
+
 async function load($: EngineInterface, force: boolean) {
+  lastPrint = '' // read for another reason: the next check reads again rather than trust an older print
   let next: GraphData
   let raw: string
   let refs: string
@@ -162,13 +204,17 @@ async function pressRefresh($: EngineInterface) {
   }
 }
 
+// Loads of the open commit's details can overlap (a refresh, a click): only the newest one is written.
+let detailsSeq = 0
+
 async function openDetails($: EngineInterface, hash: string) {
   const c = commits.find(one => one.hash === hash)
   if (!c) return
+  const seq = ++detailsSeq
   const loaded = await loadDetails(runner($), c).catch(
     (err): Details => ({ ...emptyDetails(hash), status: 'error', message: String(err) }),
   )
-  if (current.selected !== hash) return
+  if (current.selected !== hash || seq !== detailsSeq) return
   shownDetails = loaded
   await update($, details, () => loaded)
 }
@@ -216,10 +262,12 @@ async function runAction($: EngineInterface, action: Action) {
   await setPending($, { ...p, status: 'running', message: '' })
   // The repository may have moved since this was drawn (Claude, or a terminal): a stash@{n} names
   // another stash, "Reset main" would reset another branch. Read again, and stop if it changed.
-  // Changes in the working tree only count for the uncommitted row's own actions.
-  const seen = p.hash === WORKING ? last : lastRefs
+  // Changes in the working tree count for the uncommitted row's actions and every dangerous one
+  // (a hard reset would throw away edits made after this was shown).
+  const withStatus = p.hash === WORKING || !!action.isDanger
+  const seen = withStatus ? last : lastRefs
   await refresh($)
-  if ((p.hash === WORKING ? last : lastRefs) !== seen) {
+  if ((withStatus ? last : lastRefs) !== seen) {
     await setPending($, { ...p, status: 'error', message: 'The repository changed since this was shown. Check the action above and run it again.' })
     return
   }
@@ -367,7 +415,7 @@ export const register: Register = on => {
     void $.ui.open({ id: PANE, title: TITLE })
     void refresh($, true)
     poll?.cancel()
-    poll = $.clock.every(POLL_MS, () => void isPaneUp($).then(up => up && refresh($)).catch(() => {}))
+    poll = $.clock.every(POLL_MS, () => void check($).catch(() => {}))
     return next(e)
   })
 
@@ -376,7 +424,7 @@ export const register: Register = on => {
   // Commits, checkouts and merges mostly happen through Bash: redraw right after one.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
-    if (startSurface !== 'vscode') isPaneUp($).then(up => up && refresh($)).catch(() => {})
+    if (startSurface !== 'vscode') check($).catch(() => {})
     return ran
   })
 
@@ -440,7 +488,7 @@ async function drawPane($: EngineInterface, e: RenderInput) {
     // A narrow pane drops Date so Description keeps room to read; Author always stays.
     const showDate = width >= 70
     // Unchanged values (a scroll tick's ask): the drawing they made last time.
-    const key = JSON.stringify([e.surface, width, d, v, det, fd, pend, res, rf, typed, narrowed, w, sp])
+    const key = JSON.stringify([e.surface, width, typed, narrowed, sp].concat([d, v, det, fd, pend, res, rf, w].map(keyOf)))
     if (kept?.key === key) return kept.tree as JSX.Element
     const keep = (tree: JSX.Element) => ((kept = { key, tree }), tree)
 
@@ -557,7 +605,7 @@ async function drawPane($: EngineInterface, e: RenderInput) {
         <Box flexDirection="row" alignItems="center" gap={1} width="100%" flexShrink={1} minWidth={0} overflow="hidden">
           {/* A badge keeps up to 14 cells (a tag like v1.2.0 whole) and gives way past that before
               the subject does: in a narrow column the subject kept 2 cells and wrapped. */}
-          {badges(c, d.remotes).map(b => {
+          {badges(c, d.remotes, d.localBranches).map(b => {
             if (Svg) {
               const label = `${clip(b.label, 28)}${b.isSynced ? ' ⇅' : ''}`
               const pill = badgeSvg(b.kind, label, lane)
@@ -794,7 +842,13 @@ async function drawPane($: EngineInterface, e: RenderInput) {
                     </Text>
                   )}
                 </Text>
-                {x.files.map(fileRow)}
+                {x.files.slice(0, MAX_FILES).map(fileRow)}
+                {x.files.length > MAX_FILES && (
+                  <Text dimColor>
+                    {x.files.length - MAX_FILES} more not shown. See them all with{' '}
+                    {c.kind === 'working' ? 'git status' : `git show --stat ${c.hash.slice(0, 7)}`}
+                  </Text>
+                )}
               </Box>
             </Box>
           )}

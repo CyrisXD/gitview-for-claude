@@ -28,12 +28,12 @@ test('groups: commit, branch, tag and remote actions with the right commands', a
 
   const feature = groupsFor(c!, CTX)
   const del = feature[1]!.actions.find(a => a.id === 'branch:feature:delete')!
-  expect(del.run!('', '-D')).toEqual([['branch', '-D', 'feature']])
+  expect(del.run!('', '-D')).toEqual([['branch', '-D', '--end-of-options', 'feature']])
   expect(feature[0]!.actions.find(a => a.id === 'commit:merge')!.run!('', '')).toEqual([['merge', '--no-edit', 'ccccccc1']])
 
   const tagged = groupsFor(b!, CTX)
   expect(tagged.map(g => g.title)).toEqual(['Commit bbbbbbb', 'Tag v1.0', 'Remote branch origin/old'])
-  expect(tagged[2]!.actions.find(a => a.id === 'remote:origin/old:delete')!.run!('', '')).toEqual([['push', 'origin', '--delete', 'old']])
+  expect(tagged[2]!.actions.find(a => a.id === 'remote:origin/old:delete')!.run!('', '')).toEqual([['push', 'origin', '--delete', '--end-of-options', 'old']])
   expect(tagged[2]!.actions.map(a => a.id)).toContain('remote:origin/old:checkout')
 
   // A merge commit is cherry-picked and reverted against its first parent.
@@ -81,7 +81,7 @@ test('the pane confirms an action, runs git and shows the result', async ($, on)
   expect(((await ui.find({ key: 'g:ccccccc1:Branch feature' })) as { props?: { value?: string } })?.props?.value).toBe('branch:feature:delete') // shows what it is confirming
   expect(ran).toEqual([])
   await ui.press({ key: 'run:branch:feature:delete' })
-  expect(ran).toEqual(['git branch -d feature'])
+  expect(ran).toEqual(['git branch -d --end-of-options feature'])
   expect(await ui.find({ type: 'Text', text: /Delete: done/ })).toBeDefined()
 
   // An input action runs with what was typed.

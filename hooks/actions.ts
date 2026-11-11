@@ -34,6 +34,8 @@ const STAGED = {
     { value: 'index', label: 'Restore what was staged' },
   ],
 }
+// Before a name read from the repository: a tag may be called -f, which git would take as an option.
+const EOO = '--end-of-options'
 const NO_WHITESPACE = '-blank-at-eol,-blank-at-eof,-space-before-tab'
 
 export function groupsFor(c: Commit, ctx: Context): Group[] {
@@ -168,13 +170,13 @@ export function groupsFor(c: Commit, ctx: Context): Group[] {
     ],
   })
 
-  for (const b of badges(c, ctx.remotes)) {
+  for (const b of badges(c, ctx.remotes, ctx.localBranches)) {
     if (b.kind === 'tag') {
       groups.push({
         title: `Tag ${b.label}`,
         actions: [
           ...(remote ? [{ id: `tag:${b.label}:push`, label: `Push to ${remote}`, run: () => [['push', remote, `refs/tags/${b.label}`]] }] : []),
-          { id: `tag:${b.label}:delete`, label: 'Delete', isDanger: true, run: () => [['tag', '-d', b.label]] },
+          { id: `tag:${b.label}:delete`, label: 'Delete', isDanger: true, run: () => [['tag', '-d', EOO, b.label]] },
           { id: `tag:${b.label}:copy`, label: 'Copy name', copy: b.label },
         ],
       })
@@ -185,9 +187,9 @@ export function groupsFor(c: Commit, ctx: Context): Group[] {
       groups.push({
         title: `Remote branch ${b.label}`,
         actions: [
-          ...(hasLocal ? [] : [{ id: `remote:${b.label}:checkout`, label: 'Check out as local branch', run: () => [['checkout', '--track', b.label]] }]),
-          { id: `remote:${b.label}:merge`, label: `Merge into ${current}`, run: () => [['merge', '--no-edit', b.label]] },
-          { id: `remote:${b.label}:delete`, label: `Delete on ${rem}`, isDanger: true, run: () => [['push', rem, '--delete', name]] },
+          ...(hasLocal ? [] : [{ id: `remote:${b.label}:checkout`, label: 'Check out as local branch', run: () => [['checkout', '--track', EOO, b.label]] }]),
+          { id: `remote:${b.label}:merge`, label: `Merge into ${current}`, run: () => [['merge', '--no-edit', EOO, b.label]] },
+          { id: `remote:${b.label}:delete`, label: `Delete on ${rem}`, isDanger: true, run: () => [['push', rem, '--delete', EOO, name]] },
           { id: `remote:${b.label}:copy`, label: 'Copy name', copy: b.label },
         ],
       })
@@ -204,16 +206,16 @@ export function groupsFor(c: Commit, ctx: Context): Group[] {
               ? [{ id: `branch:${name}:pull`, label: 'Pull', run: () => [['pull', '--ff-only']] }]
               : []
             : [
-                { id: `branch:${name}:checkout`, label: 'Check out', run: () => [['checkout', name]] },
-                { id: `branch:${name}:merge`, label: `Merge into ${current}`, run: () => [['merge', '--no-edit', name]] },
-                { id: `branch:${name}:rebase`, label: `Rebase ${current} onto this`, run: () => [['rebase', name]] },
+                { id: `branch:${name}:checkout`, label: 'Check out', run: () => [['checkout', EOO, name]] },
+                { id: `branch:${name}:merge`, label: `Merge into ${current}`, run: () => [['merge', '--no-edit', EOO, name]] },
+                { id: `branch:${name}:rebase`, label: `Rebase ${current} onto this`, run: () => [['rebase', EOO, name]] },
               ]),
-          ...(remote ? [{ id: `branch:${name}:push`, label: `Push to ${remote}`, run: () => [['push', '-u', remote, name]] }] : []),
+          ...(remote ? [{ id: `branch:${name}:push`, label: `Push to ${remote}`, run: () => [['push', '-u', remote, EOO, name]] }] : []),
           {
             id: `branch:${name}:rename`,
             label: 'Rename…',
             input: { label: 'New name', value: name },
-            run: v => [['branch', '-m', name, v]],
+            run: v => [['branch', '-m', EOO, name, v]],
           },
           ...(isCurrent
             ? []
@@ -229,7 +231,7 @@ export function groupsFor(c: Commit, ctx: Context): Group[] {
                       { value: '-D', label: 'Force, even if unmerged' },
                     ],
                   },
-                  run: (_: string, flag: string) => [['branch', flag, name]],
+                  run: (_: string, flag: string) => [['branch', flag, EOO, name]],
                 },
               ]),
           // Its remote twin shares this badge, so its delete lives here.
@@ -239,7 +241,7 @@ export function groupsFor(c: Commit, ctx: Context): Group[] {
                   id: `branch:${name}:delete-remote`,
                   label: `Delete on ${twin}`,
                   isDanger: true,
-                  run: () => [['push', twin, '--delete', name]],
+                  run: () => [['push', twin, '--delete', EOO, name]],
                 },
               ]
             : []),
@@ -252,5 +254,6 @@ export function groupsFor(c: Commit, ctx: Context): Group[] {
 }
 
 // The command line a confirm step shows, quoted where a word needs it.
+// --end-of-options is left out: it changes nothing a reader needs to see.
 export const describe = (cmds: string[][]) =>
-  cmds.map(argv => ['git', ...argv].map(w => (/^[\w./@{}:=-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`)).join(' ')).join(' && ')
+  cmds.map(argv => ['git', ...argv.filter(w => w !== EOO)].map(w => (/^[\w./@{}:=-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`)).join(' ')).join(' && ')
