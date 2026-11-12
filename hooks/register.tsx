@@ -78,12 +78,22 @@ export const lines = (s: string, n: number) => {
   return all.length > n ? `${all.slice(0, n).join('\n')}\n…` : s
 }
 
+// Answers a check just read (status, HEAD, …), handed to the load it starts instead of running them again.
+let primed: Map<string, ReturnType<Run>> | null = null
+
 const runner =
   ($: EngineInterface): Run =>
-  argv =>
+  argv => {
+    const key = JSON.stringify(argv)
+    const hit = primed?.get(key)
+    if (hit) {
+      primed!.delete(key)
+      return hit
+    }
     // GIT_OPTIONAL_LOCKS=0: a background status must not take index.lock, or a git command
     // Claude or the person runs at that moment fails with "index.lock exists".
-    $.process.run(argv, { timeoutMs: 20_000, env: { GIT_OPTIONAL_LOCKS: '0' } })
+    return $.process.run(argv, { timeoutMs: 20_000, env: { GIT_OPTIONAL_LOCKS: '0' } })
+  }
 
 async function setView($: EngineInterface, next: View) {
   current = next
@@ -118,20 +128,40 @@ function refresh($: EngineInterface, force = false): Promise<boolean> {
 const isPaneUp = async ($: EngineInterface) => (await $.ui.panes()).some(p => p.id === PANE)
 
 // The poll and Bash calls read a cheap fingerprint first (refs, stashes, status, HEAD) and the full
-// history (log --topo-order, slow on a big repository) only when it moved. One check at a time:
-// an ask during one is dropped, and the next poll catches what it would have seen.
+// history (log --topo-order, slow on a big repository) only when it moved. One check at a time;
+// asks during one (a Bash call right after the poll began) fold into one more check after it.
 let lastPrint = ''
+let loads = 0 // loads run, so a check knows whether another one ran beside its own
 let checking = false
+let recheck = false
 async function check($: EngineInterface) {
-  if (checking) return
+  if (checking) {
+    recheck = true
+    return
+  }
   checking = true
   try {
-    if (!(await isPaneUp($))) return
-    const fp = await fingerprint(runner($))
-    if (fp !== lastPrint) {
-      await refresh($)
-      lastPrint = fp
-    }
+    do {
+      recheck = false
+      if (!(await isPaneUp($))) return
+      const read = new Map<string, ReturnType<Run>>()
+      const run = runner($)
+      const fp = await fingerprint(argv => {
+        const r = run(argv)
+        read.set(JSON.stringify(argv), r)
+        return r
+      })
+      if (fp === lastPrint) continue
+      const before = loads
+      primed = read
+      try {
+        await refresh($)
+      } finally {
+        primed = null
+      }
+      // Only when the load was this check's own: one beside it may show a newer state than fp.
+      if (loads === before + 1) lastPrint = fp
+    } while (recheck)
   } finally {
     checking = false
   }
@@ -139,6 +169,7 @@ async function check($: EngineInterface) {
 
 async function load($: EngineInterface, force: boolean) {
   lastPrint = '' // read for another reason: the next check reads again rather than trust an older print
+  loads++
   let next: GraphData
   let raw: string
   let refs: string

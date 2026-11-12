@@ -101,7 +101,8 @@ export async function fingerprint(run: Run): Promise<string> {
     run(git('remote')),
     run(git('stash', 'list', '--format=%H')),
     run(git('status', '--porcelain')),
-    run(git('symbolic-ref', '-q', 'HEAD')),
+    // The same commands loadGraph runs, so a load right after can reuse these answers.
+    run(git('symbolic-ref', '--short', '-q', 'HEAD')),
     run(git('rev-parse', 'HEAD')),
     ...OPERATIONS.map(([, ref]) => run(git('rev-parse', '-q', '--verify', ref))),
   ])

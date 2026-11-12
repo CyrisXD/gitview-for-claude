@@ -106,7 +106,10 @@ test('background reads: never two at once, none while the pane is closed, no ind
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('ui.panes', () => ({ value: isUp ? [{ id: 'gitview', title: 'Gitview', isShown: true, isFocused: false, isPlaced: true }] : [] }))
+  on('tool.call', () => ({ result: { stdout: '', stderr: '', interrupted: false }, text: '' })) // the engine's Bash, answered here
+  let prints = 0
   on('process.run', async (_, e) => {
+    if (e.argv.includes('--format=%(objectname) %(refname)')) prints++
     envs.push(e.init?.env as Record<string, string> | undefined)
     if (!e.argv.includes('log')) return ok('')
     logs++
@@ -120,9 +123,10 @@ test('background reads: never two at once, none while the pane is closed, no ind
   // Claude runs five Bash commands back to back: one read runs, the rest share one after it.
   const before = logs
   // Typed loosely: the generated tool.call types are too deep for tsc (TS2589).
-  const tool = $.tool as unknown as { call(e: { tool: string; input: unknown }): Promise<unknown> }
-  const bash = () => tool.call({ tool: 'Bash', input: { command: 'true' } }).catch(() => {})
+  const tool = $.tool as unknown as { call(e: { tool: string; command: string }): Promise<unknown> }
+  const bash = () => tool.call({ tool: 'Bash', command: 'true' }).catch(() => {})
   await Promise.all([bash(), bash(), bash(), bash(), bash(), clock.advance(500)])
+  expect(prints).toBeGreaterThan(0) // the Bash calls reached the pane's hook
   expect(most).toBe(1)
   expect(logs - before).toBeLessThanOrEqual(2)
   expect(envs.every(env => env?.GIT_OPTIONAL_LOCKS === '0')).toBe(true)
@@ -193,4 +197,49 @@ test('the poll reads the full history only when the fingerprint moves', async ($
   refs = 'b refs/heads/main\n' // a commit lands
   await clock.advance(10_000)
   expect(logs).toBe(settled + 1)
+})
+
+test('a Bash call while a check runs still gets its redraw, and a change reads status once', async ($, on) => {
+  const clock = mock.clock(on)
+  let refs = 'a refs/heads/main\n'
+  let log = LOG
+  let statuses = 0
+  let prints = 0
+  on('command.register', () => ({ value: { command: 'gitview' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('ui.panes', () => ({ value: [{ id: 'gitview', title: 'Gitview', isShown: true, isFocused: false, isPlaced: true }] }))
+  on('tool.call', () => ({ result: { stdout: '', stderr: '', interrupted: false }, text: '' })) // the engine's Bash, answered here
+  on('process.run', async (_, e) => {
+    const a = e.argv.join(' ')
+    if (a.includes('%(objectname)')) {
+      prints++
+      const now = refs // read at the start, as git would
+      await clock.sleep(100)
+      return ok(now)
+    }
+    if (a.includes('status --porcelain')) statuses++
+    if (a.includes(' log ')) return ok(log)
+    if (a.includes('rev-parse HEAD')) return ok('mmmmmmm1\n')
+    if (a.includes('symbolic-ref')) return ok('main\n')
+    return ok('')
+  })
+  const tool = $.tool as unknown as { call(e: { tool: string; command: string }): Promise<unknown> }
+  const bash = () => tool.call({ tool: 'Bash', command: 'true' }).catch(() => {})
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
+  await clock.advance(1_000)
+  // One Bash call's check is reading the refs when Claude commits and the next Bash call ends.
+  const first = bash()
+  await clock.advance(10)
+  refs = 'b refs/heads/main\n'
+  log = row('ddddddd1', 'mmmmmmm1', 'HEAD -> main', 'Claude commit') + LOG.replace('HEAD -> main, ', '')
+  const before = statuses
+  await Promise.all([first, bash(), clock.advance(1_000)])
+  expect(prints).toBeGreaterThanOrEqual(2)
+  // Drawn now, not a poll later.
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Claude commit/ })).toBeDefined()
+  await ui.unmount()
+  // The folded check's load reused its fingerprint's status rather than reading it again.
+  expect(statuses - before).toBe(1)
 })
