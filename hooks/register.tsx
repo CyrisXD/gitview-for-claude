@@ -46,7 +46,6 @@ const spacing = atom({ plugin: 'gitview', key: 'spacing' } as const, 'normal' as
 let current: View = { limit: PAGE, offset: 0, selected: null, file: null }
 let commits: Commit[] = []
 let onlyRef: string | null = null // the branch the history is narrowed to, a full ref name
-let shownDetails: Details | null = null
 let adopted = false // whether a draw has handed the mirrors $.state's values yet
 let last = '' // the last git output written, so an unchanged poll does not redraw
 let lastRefs = '' // the same without the working tree's status
@@ -119,26 +118,20 @@ function refresh($: EngineInterface, force = false): Promise<boolean> {
 const isPaneUp = async ($: EngineInterface) => (await $.ui.panes()).some(p => p.id === PANE)
 
 // The poll and Bash calls read a cheap fingerprint first (refs, stashes, status, HEAD) and the full
-// history (log --topo-order, slow on a big repository) only when it moved. One check at a time;
-// asks during one fold into a single check after it.
+// history (log --topo-order, slow on a big repository) only when it moved. One check at a time:
+// an ask during one is dropped, and the next poll catches what it would have seen.
 let lastPrint = ''
 let checking = false
-let recheck = false
 async function check($: EngineInterface) {
-  if (checking) {
-    recheck = true
-    return
-  }
+  if (checking) return
   checking = true
   try {
-    do {
-      recheck = false
-      if (!(await isPaneUp($))) return
-      const fp = await fingerprint(runner($))
-      if (fp === lastPrint) continue
+    if (!(await isPaneUp($))) return
+    const fp = await fingerprint(runner($))
+    if (fp !== lastPrint) {
       await refresh($)
       lastPrint = fp
-    } while (recheck)
+    }
   } finally {
     checking = false
   }
@@ -215,7 +208,6 @@ async function openDetails($: EngineInterface, hash: string) {
     (err): Details => ({ ...emptyDetails(hash), status: 'error', message: String(err) }),
   )
   if (current.selected !== hash || seq !== detailsSeq) return
-  shownDetails = loaded
   await update($, details, () => loaded)
 }
 
@@ -309,7 +301,6 @@ async function selectCommit($: EngineInterface, hash: string) {
     return
   }
   await setView($, { ...current, selected: hash, file: null, openedAt: current.offset })
-  shownDetails = emptyDetails(hash)
   await update($, details, () => emptyDetails(hash))
   await update($, diff, () => null)
   await openDetails($, hash)
@@ -453,555 +444,553 @@ export const register: Register = on => {
 }
 
 async function drawPane($: EngineInterface, e: RenderInput) {
-  {
-    const els = $.ui.resolve(e)
-    const { Box, Text, Button, Code } = els
-    // The mobile app draws no fields yet: choices become buttons there, and names cannot be typed.
-    // (its table may still hand them out, drawn as nothing, so the surface decides).
-    const fields = e.surface !== 'mobile'
-    const Input = fields && 'Input' in els ? els.Input : null
-    const Select = fields && 'Select' in els ? els.Select : null
-    const d = await read($, data)
-    const v = await read($, view)
-    const det = await read($, details)
-    const fd = await read($, diff)
-    const pend = await read($, pending)
-    const res = await read($, result)
-    const rf = await read($, refreshing)
-    const narrowed = await read($, only)
-    const sp = await read($, spacing)
-    const gap = SPACING[sp] ?? SPACING.normal
-    const typed = await read($, filter) // as typed: trimming it would eat the space before a second word
-    const q = typed.trim()
-    // After a reload the module's mirrors start over while $.state keeps the values: take them once.
-    // Never again: a live draw can read a value from before a handler's latest write, and copying it
-    // back threw away a commit's details as they arrived (the row stayed on Loading…).
-    if (!adopted) {
-      adopted = true
-      pendingNow = pend
-      commits = d.commits
-      current = v
-      onlyRef = narrowed
-    }
-    const width = (e.props as { bodyColumns?: number }).bodyColumns ?? 120
-    const w = await read($, widths)
-    // A narrow pane drops Date so Description keeps room to read; Author always stays.
-    const showDate = width >= 70
-    // Unchanged values (a scroll tick's ask): the drawing they made last time.
-    const key = JSON.stringify([e.surface, width, typed, narrowed, sp].concat([d, v, det, fd, pend, res, rf, w].map(keyOf)))
-    if (kept?.key === key) return kept.tree as JSX.Element
-    const keep = (tree: JSX.Element) => ((kept = { key, tree }), tree)
+  const els = $.ui.resolve(e)
+  const { Box, Text, Button, Code } = els
+  // The mobile app draws no fields yet: choices become buttons there, and names cannot be typed.
+  // (its table may still hand them out, drawn as nothing, so the surface decides).
+  const fields = e.surface !== 'mobile'
+  const Input = fields && 'Input' in els ? els.Input : null
+  const Select = fields && 'Select' in els ? els.Select : null
+  const d = await read($, data)
+  const v = await read($, view)
+  const det = await read($, details)
+  const fd = await read($, diff)
+  const pend = await read($, pending)
+  const res = await read($, result)
+  const rf = await read($, refreshing)
+  const narrowed = await read($, only)
+  const sp = await read($, spacing)
+  const gap = SPACING[sp] ?? SPACING.normal
+  const typed = await read($, filter) // as typed: trimming it would eat the space before a second word
+  const q = typed.trim()
+  // After a reload the module's mirrors start over while $.state keeps the values: take them once.
+  // Never again: a live draw can read a value from before a handler's latest write, and copying it
+  // back threw away a commit's details as they arrived (the row stayed on Loading…).
+  if (!adopted) {
+    adopted = true
+    pendingNow = pend
+    commits = d.commits
+    current = v
+    onlyRef = narrowed
+  }
+  const width = (e.props as { bodyColumns?: number }).bodyColumns ?? 120
+  const w = await read($, widths)
+  // A narrow pane drops Date so Description keeps room to read; Author always stays.
+  const showDate = width >= 70
+  // Unchanged values (a scroll tick's ask): the drawing they made last time.
+  const key = [e.surface, width, typed, narrowed, sp, d, v, det, fd, pend, res, rf, w].map(keyOf).join('\0')
+  if (kept?.key === key) return kept.tree as JSX.Element
+  const keep = (tree: JSX.Element) => ((kept = { key, tree }), tree)
 
-    const refreshIcon = rf?.status === 'running' ? '…' : '↻'
-    const submitRefreshes = !!Input && (e.surface === 'desktop' || e.surface === 'vscode')
-    const header = (count: string) => (
-      <Box flexDirection="column" gap={1}>
-        {/* Search first, filtering as it is typed; Refresh an icon at the row's right end. The desktop
-            draws an Input's submit as a button whatever its label (an empty one stayed), so there that
-            button is the refresh icon: Enter has nothing else to do, the list already follows each key. */}
-        <Box flexDirection="row" alignItems="center" gap={1}>
-          {/* The branch first: it narrows what the search then looks through. On the desktop the
-              search field's own button (↻) stays at the right of the field. */}
-          {Select && (d.branches?.length ?? 0) > 0 && (
-            <Box flexShrink={0}>
-              <Select
-                key="branch-filter"
-                options={[
-                  { value: '*', label: 'All branches' },
-                  ...d.branches!.map(r => ({ value: r, label: r.replace(/^refs\/(heads|remotes)\//, '') })),
-                ]}
-                value={narrowed ?? '*'}
-                onSelect={(value: string) => void setBranch($, value === '*' ? null : value)}
-              />
-            </Box>
-          )}
-          {Select && e.surface !== 'terminal' && (
-            <Box flexShrink={0}>
-              <Select
-                key="graph-spacing"
-                options={[
-                  { value: 'compact', label: 'Graph: compact' },
-                  { value: 'normal', label: 'Graph: normal' },
-                  { value: 'wide', label: 'Graph: wide' },
-                ]}
-                value={sp}
-                onSelect={(value: string) => void update($, spacing, () => (value in SPACING ? (value as Spacing) : 'normal'))}
-              />
-            </Box>
-          )}
-          <Box flexGrow={1} minWidth={0}>
-            {Input && (
-              <Input
-                key="filter"
-                placeholder="Search subject, author, hash, branch or tag"
-                value={typed}
-                submitLabel={submitRefreshes ? refreshIcon : ''}
-                onInput={(value: string) => void setFilter($, value)}
-                onSubmit={(value: string) => void (submitRefreshes ? pressRefresh($) : setFilter($, value))}
-              />
-            )}
+  const refreshIcon = rf?.status === 'running' ? '…' : '↻'
+  const submitRefreshes = !!Input && (e.surface === 'desktop' || e.surface === 'vscode')
+  const header = (count: string) => (
+    <Box flexDirection="column" gap={1}>
+      {/* Search first, filtering as it is typed; Refresh an icon at the row's right end. The desktop
+          draws an Input's submit as a button whatever its label (an empty one stayed), so there that
+          button is the refresh icon: Enter has nothing else to do, the list already follows each key. */}
+      <Box flexDirection="row" alignItems="center" gap={1}>
+        {/* The branch first: it narrows what the search then looks through. On the desktop the
+            search field's own button (↻) stays at the right of the field. */}
+        {Select && (d.branches?.length ?? 0) > 0 && (
+          <Box flexShrink={0}>
+            <Select
+              key="branch-filter"
+              options={[
+                { value: '*', label: 'All branches' },
+                ...d.branches!.map(r => ({ value: r, label: r.replace(/^refs\/(heads|remotes)\//, '') })),
+              ]}
+              value={narrowed ?? '*'}
+              onSelect={(value: string) => void setBranch($, value === '*' ? null : value)}
+            />
           </Box>
-          {typed && <Button key="filter:clear" label="Clear" onPress={() => void setFilter($, '')} />}
-          {!submitRefreshes && (
-          <Button
-            key="refresh"
-            label={refreshIcon}
-            hotkey="r"
-            dimColor={rf?.status === 'running'}
-            onPress={() => void pressRefresh($)}
-          />
+        )}
+        {Select && e.surface !== 'terminal' && (
+          <Box flexShrink={0}>
+            <Select
+              key="graph-spacing"
+              options={[
+                { value: 'compact', label: 'Graph: compact' },
+                { value: 'normal', label: 'Graph: normal' },
+                { value: 'wide', label: 'Graph: wide' },
+              ]}
+              value={sp}
+              onSelect={(value: string) => void update($, spacing, () => (value in SPACING ? (value as Spacing) : 'normal'))}
+            />
+          </Box>
+        )}
+        <Box flexGrow={1} minWidth={0}>
+          {Input && (
+            <Input
+              key="filter"
+              placeholder="Search subject, author, hash, branch or tag"
+              value={typed}
+              submitLabel={submitRefreshes ? refreshIcon : ''}
+              onInput={(value: string) => void setFilter($, value)}
+              onSubmit={(value: string) => void (submitRefreshes ? pressRefresh($) : setFilter($, value))}
+            />
           )}
         </Box>
-        <Text dimColor wrap="truncate">
-          {[count, d.branch && `on ${d.branch}`, narrowed && `history of ${narrowed.replace(/^refs\/(heads|remotes)\//, '')}`].filter(Boolean).join(' · ')}
-          {rf?.status === 'done' && <Text color={ADD}>{` · ✓ ${rf.text}`}</Text>}
-        </Text>
-        {/* Notices get full-width lines of their own: squeezed into the row above they wrapped word by word. */}
-        {d.operation && (
-          <Text color="#f5a524">
-            The {d.operation} stopped on a conflict. Open Uncommitted Changes to continue or abort it.
-          </Text>
+        {typed && <Button key="filter:clear" label="Clear" onPress={() => void setFilter($, '')} />}
+        {!submitRefreshes && (
+        <Button
+          key="refresh"
+          label={refreshIcon}
+          hotkey="r"
+          dimColor={rf?.status === 'running'}
+          onPress={() => void pressRefresh($)}
+        />
         )}
-        {res && (
-          <Text color={res.isOk ? ADD : DEL} wrap="truncate">
-            {res.text}
-          </Text>
-        )}
-        {/* No divider element or one-sided border exists, so a dim rule parts the header from the graph. */}
-        <Text dimColor wrap="truncate">
-          {'─'.repeat(width)}
+      </Box>
+      <Text dimColor wrap="truncate">
+        {[count, d.branch && `on ${d.branch}`, narrowed && `history of ${narrowed.replace(/^refs\/(heads|remotes)\//, '')}`].filter(Boolean).join(' · ')}
+        {rf?.status === 'done' && <Text color={ADD}>{` · ✓ ${rf.text}`}</Text>}
+      </Text>
+      {/* Notices get full-width lines of their own: squeezed into the row above they wrapped word by word. */}
+      {d.operation && (
+        <Text color="#f5a524">
+          The {d.operation} stopped on a conflict. Open Uncommitted Changes to continue or abort it.
         </Text>
+      )}
+      {res && (
+        <Text color={res.isOk ? ADD : DEL} wrap="truncate">
+          {res.text}
+        </Text>
+      )}
+      {/* No divider element or one-sided border exists, so a dim rule parts the header from the graph. */}
+      <Text dimColor wrap="truncate">
+        {'─'.repeat(width)}
+      </Text>
+    </Box>
+  )
+
+  if (d.status !== 'ok') {
+    const message = d.status === 'empty' ? 'No commits yet.' : d.message
+    return keep(
+      <Box flexDirection="column" gap={1}>
+        {header(d.status === 'loading' ? 'Loading…' : '')}
+        {message && <Text dimColor>{message}</Text>}
       </Box>
     )
+  }
 
-    if (d.status !== 'ok') {
-      const message = d.status === 'empty' ? 'No commits yet.' : d.message
-      return keep(
-        <Box flexDirection="column" gap={1}>
-          {header(d.status === 'loading' ? 'Loading…' : '')}
-          {message && <Text dimColor>{message}</Text>}
-        </Box>
+  const lay = layout(d.commits)
+  const Svg = e.surface !== 'terminal' && 'Svg' in els ? els.Svg : null
+
+  const graphCell = (r: number) => {
+    const c = d.commits[r]!
+    if (Svg) {
+      return (
+        <Svg source={rowSvg(d.commits, lay, r, isHeadCommit(c), gap)} alt={`graph lane ${lay.cols[r]! + 1}`} height={ROW_PX} />
       )
     }
+    const mark = c.kind === 'working' ? '◌' : c.kind === 'stash' ? '◎' : c.parents.length > 1 ? '◯' : '●'
+    return <Text color={laneColor(lay.cols[r]!)}>{'  '.repeat(lay.cols[r]!) + mark}</Text>
+  }
 
-    const lay = layout(d.commits)
-    const Svg = e.surface !== 'terminal' && 'Svg' in els ? els.Svg : null
-
-    const graphCell = (r: number) => {
-      const c = d.commits[r]!
-      if (Svg) {
-        return (
-          <Svg source={rowSvg(d.commits, lay, r, isHeadCommit(c), gap)} alt={`graph lane ${lay.cols[r]! + 1}`} height={ROW_PX} />
-        )
-      }
-      const mark = c.kind === 'working' ? '◌' : c.kind === 'stash' ? '◎' : c.parents.length > 1 ? '◯' : '●'
-      return <Text color={laneColor(lay.cols[r]!)}>{'  '.repeat(lay.cols[r]!) + mark}</Text>
-    }
-
-    // Badges sit outside the Button: a desktop button drops a Text's background.
-    const description = (c: Commit, r: number) => {
-      const lane = laneColor(lay.cols[r]!)
-      return (
-        <Box flexDirection="row" alignItems="center" gap={1} width="100%" flexShrink={1} minWidth={0} overflow="hidden">
-          {/* A badge keeps up to 14 cells (a tag like v1.2.0 whole) and gives way past that before
-              the subject does: in a narrow column the subject kept 2 cells and wrapped. */}
-          {badges(c, d.remotes, d.localBranches).map(b => {
-            if (Svg) {
-              const label = `${clip(b.label, 28)}${b.isSynced ? ' ⇅' : ''}`
-              const pill = badgeSvg(b.kind, label, lane)
-              return (
-                <Box flexShrink={0}>
-                  <Svg source={pill.source} alt={`${b.kind} ${label}`} width={pill.width} height={pill.height} />
-                </Box>
-              )
-            }
-            const text = ` ${clip(b.label, 28)}${b.isSynced ? ' ⇅' : ''} `
+  // Badges sit outside the Button: a desktop button drops a Text's background.
+  const description = (c: Commit, r: number) => {
+    const lane = laneColor(lay.cols[r]!)
+    return (
+      <Box flexDirection="row" alignItems="center" gap={1} width="100%" flexShrink={1} minWidth={0} overflow="hidden">
+        {/* A badge keeps up to 14 cells (a tag like v1.2.0 whole) and gives way past that before
+            the subject does: in a narrow column the subject kept 2 cells and wrapped. */}
+        {badges(c, d.remotes, d.localBranches).map(b => {
+          if (Svg) {
+            const label = `${clip(b.label, 28)}${b.isSynced ? ' ⇅' : ''}`
+            const pill = badgeSvg(b.kind, label, lane)
             return (
-              <Box flexShrink={1} minWidth={Math.min(text.length, 14)} overflow="hidden">
-                <Text {...badgeStyle(b.kind, lane, e.surface !== 'terminal')} wrap="truncate">
-                  {text}
-                </Text>
+              <Box flexShrink={0}>
+                <Svg source={pill.source} alt={`${b.kind} ${label}`} width={pill.width} height={pill.height} />
               </Box>
             )
-          })}
-          {/* The terminal's Button wraps its label whatever the Text says: one row keeps the row one line. */}
-          <Box flexShrink={1} minWidth={Math.min(12, c.subject.length)} overflow="hidden" height={e.surface === 'terminal' ? 1 : undefined}>
-            <Button key={`c:${c.hash}`} plain onPress={() => void selectCommit($, c.hash)}>
-              <Text bold={isHeadCommit(c) || undefined} italic={c.kind !== 'commit' || undefined} dimColor={c.kind === 'stash' || undefined} wrap="truncate">
-                {c.subject}
+          }
+          const text = ` ${clip(b.label, 28)}${b.isSynced ? ' ⇅' : ''} `
+          return (
+            <Box flexShrink={1} minWidth={Math.min(text.length, 14)} overflow="hidden">
+              <Text {...badgeStyle(b.kind, lane, e.surface !== 'terminal')} wrap="truncate">
+                {text}
               </Text>
+            </Box>
+          )
+        })}
+        {/* The terminal's Button wraps its label whatever the Text says: one row keeps the row one line. */}
+        <Box flexShrink={1} minWidth={Math.min(12, c.subject.length)} overflow="hidden" height={e.surface === 'terminal' ? 1 : undefined}>
+          <Button key={`c:${c.hash}`} plain onPress={() => void selectCommit($, c.hash)}>
+            <Text bold={isHeadCommit(c) || undefined} italic={c.kind !== 'commit' || undefined} dimColor={c.kind === 'stash' || undefined} wrap="truncate">
+              {c.subject}
+            </Text>
+          </Button>
+        </Box>
+      </Box>
+    )
+  }
+
+  const fileRow = (f: FileChange) => {
+    const s = STATUS[f.status] ?? { label: f.status, color: '#898781' }
+    const counts = f.added === null ? (f.status === '?' ? 'untracked' : 'binary') : `+${f.added} −${f.removed}`
+    return (
+      <Box flexDirection="column">
+        {/* Desktop Buttons drop a child Text's colour, so the coloured parts sit outside it.
+            Three fixed columns: the status letter, the path, the counts right-aligned. */}
+        <Box flexDirection="row" gap={1}>
+          <Box width={2} flexShrink={0}>
+            <Text color={s.color} mono>
+              {s.label}
+            </Text>
+          </Box>
+          {/* Letter, path, then its counts right after it: they stay next to what they count. */}
+          <Box flexShrink={1} minWidth={0} marginRight={1}>
+            <Button key={`f:${f.path}`} plain onPress={() => void selectFile($, f)}>
+              {f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}
             </Button>
           </Box>
-        </Box>
-      )
-    }
-
-    const fileRow = (f: FileChange) => {
-      const s = STATUS[f.status] ?? { label: f.status, color: '#898781' }
-      const counts = f.added === null ? (f.status === '?' ? 'untracked' : 'binary') : `+${f.added} −${f.removed}`
-      return (
-        <Box flexDirection="column">
-          {/* Desktop Buttons drop a child Text's colour, so the coloured parts sit outside it.
-              Three fixed columns: the status letter, the path, the counts right-aligned. */}
-          <Box flexDirection="row" gap={1}>
-            <Box width={2} flexShrink={0}>
-              <Text color={s.color} mono>
-                {s.label}
+          <Box flexShrink={0}>
+            {/* Untracked files show U too (VS Code's letter), so a conflict says so in words. */}
+            {f.status === 'U' ? (
+              <Text color={DEL}>conflict</Text>
+            ) : f.added === null ? (
+              <Text dimColor>{counts}</Text>
+            ) : (
+              <Text mono>
+                <Text color={ADD}>+{f.added}</Text> <Text color={DEL}>−{f.removed}</Text>
               </Text>
-            </Box>
-            {/* Letter, path, then its counts right after it: they stay next to what they count. */}
-            <Box flexShrink={1} minWidth={0} marginRight={1}>
-              <Button key={`f:${f.path}`} plain onPress={() => void selectFile($, f)}>
-                {f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}
-              </Button>
-            </Box>
-            <Box flexShrink={0}>
-              {/* Untracked files show U too (VS Code's letter), so a conflict says so in words. */}
-              {f.status === 'U' ? (
-                <Text color={DEL}>conflict</Text>
-              ) : f.added === null ? (
-                <Text dimColor>{counts}</Text>
-              ) : (
-                <Text mono>
-                  <Text color={ADD}>+{f.added}</Text> <Text color={DEL}>−{f.removed}</Text>
-                </Text>
-              )}
-            </Box>
+            )}
           </Box>
-          {v.file === f.path && fd?.path === f.path && (
-            <Box flexDirection="column" marginLeft={2}>
-              {fd.status === 'loading' && <Text dimColor>Loading diff…</Text>}
-              {fd.status === 'error' && <Text color={DEL}>{fd.text}</Text>}
-              {fd.status === 'ok' && !fd.text.trim() && <Text dimColor>{f.oldPath ? 'Renamed with no content changes.' : 'No textual changes.'}</Text>}
-              {fd.status === 'ok' && fd.text.trim() && <Code source={fd.text} format="diff" path={f.path} />}
-              {fd.isTruncated && <Text dimColor>Diff cut short: it is too long to show here.</Text>}
-            </Box>
-          )}
         </Box>
-      )
-    }
-
-    const actionsBox = (c: Commit) => {
-      const groups = groupsFor(c, {
-        branch: d.branch,
-        headHash: d.headHash,
-        remotes: d.remotes,
-        localBranches: d.localBranches,
-        operation: d.operation,
-      })
-      const all = groups.flatMap(g => g.actions)
-      const open = pend && pend.hash === c.hash ? all.find(a => a.id === pend.id) : undefined
-      // One dropdown per group (the commit, each branch, tag or stash on it) in place of a wall of
-      // buttons: its first entry names the group, picking an action opens its confirm step.
-      // The panel's header carries the dropdowns; the confirm step (and, without Select, the buttons) sits below.
-      const menus = Select ? (
-        <Box flexDirection="row" flexWrap="wrap" gap={1} flexShrink={0}>
-          {groups.map(g => (
-            <Select
-              key={`g:${c.hash}:${g.title}`}
-              options={[{ value: NONE, label: g.title }, ...g.actions.map(a => ({ value: a.id, label: a.label }))]}
-              value={open && g.actions.includes(open) ? open.id : NONE}
-              onSelect={(id, ev) => {
-                const a = g.actions.find(x => x.id === id)
-                if (a) void startAction($, c.hash, a, ev.surface)
-                else if (open && g.actions.includes(open)) void setPending($, null)
-              }}
-            />
-          ))}
-        </Box>
-      ) : null
-      const rest =
-        !Select || open ? (
-          <Box flexDirection="column" gap={1}>
-            {!Select &&
-              groups.map(g => (
-                <Box flexDirection="column">
-                  <Text dimColor bold>
-                    {g.title}
-                  </Text>
-                  <Box flexDirection="row" flexWrap="wrap" gap={1}>
-                    {g.actions.map(a => (
-                      <Button key={`a:${c.hash}:${a.id}`} label={a.label} onPress={press => void startAction($, c.hash, a, press.surface)} />
-                    ))}
-                  </Box>
-                </Box>
-              ))}
-            {open && pend && confirmBox(open, pend)}
-          </Box>
-        ) : null
-      return { menus, rest }
-    }
-
-    const confirmBox = (a: Action, p: Pending) => {
-      // While a merge, cherry-pick, revert or rebase is stopped, only its own continue/abort can run.
-      const stopped = !!d.operation && !a.id.startsWith('working:')
-      // A required name shows as a placeholder until typed; an optional one left empty is simply left out.
-      const shown = p.value.trim() || (a.input && !a.input.isOptional ? `<${a.input.label.toLowerCase()}>` : '')
-      const cmds = a.run ? describe(a.run(shown, p.choice)) : ''
-      return (
-        <Box flexDirection="column" gap={1} padding={1} borderStyle="round" borderColor={a.isDanger ? DEL : '#898781'}>
-          <Text bold>{a.label.replace('…', '')}</Text>
-          {a.choice && !Select && (
-            <Box flexDirection="row" flexWrap="wrap" gap={1}>
-              {a.choice.options.map(o => (
-                <Button
-                  key={`choice:${a.id}:${o.value}`}
-                  variant={o.value === p.choice ? 'primary' : undefined}
-                  label={o.label}
-                  onPress={() => void setPending($, { ...p, choice: o.value, status: 'idle', message: '' })}
-                />
-              ))}
-            </Box>
-          )}
-          {a.choice && Select && (
-            <Select
-              key={`choice:${a.id}`}
-              label={a.choice.label}
-              options={a.choice.options}
-              value={p.choice}
-              onSelect={(value: string) => void setPending($, { ...p, choice: value, status: 'idle', message: '' })}
-            />
-          )}
-          {a.input && !Input && !a.input.isOptional && (
-            <Text dimColor>{a.input.label} can be typed in the terminal or the desktop app.</Text>
-          )}
-          {a.input && Input && (
-            <Input
-              key={`input:${a.id}`}
-              label={a.input.label}
-              value={p.value}
-              autoFocus
-              submitLabel={a.label.replace('…', '')}
-              onInput={(value: string) => {
-                if (pendingNow) pendingNow = { ...pendingNow, value }
-              }}
-              onSubmit={(value: string) => {
-                if (!pendingNow) return
-                pendingNow = { ...pendingNow, value }
-                void runAction($, a)
-              }}
-            />
-          )}
-          <Text dimColor mono>
-            {cmds}
-          </Text>
-          {a.isDanger && <Text color={DEL}>This cannot be undone from here.</Text>}
-          {p.status === 'error' && <Text color={DEL}>{p.message}</Text>}
-          {stopped && <Text color="#f5a524">The {d.operation} stopped. Resolve the conflicts, then continue or abort it from Uncommitted Changes.</Text>}
-          {p.status === 'running' ? (
-            <Text dimColor>Running…</Text>
-          ) : (
-            <Box flexDirection="row" gap={1}>
-              {(!a.input || (!Input && a.input.isOptional)) && !stopped && (
-                <Button key={`run:${a.id}`} variant="primary" label={a.isDanger ? `Yes, ${a.label.replace('…', '').toLowerCase()}` : 'Run'} onPress={() => void runAction($, a)} />
-              )}
-              <Button key={`cancel:${a.id}`} role="dismiss" label="Cancel" onPress={() => void setPending($, null)} />
-            </Box>
-          )}
-        </Box>
-      )
-    }
-
-    const detailsBox = (c: Commit) => {
-      const x = det && det.hash === c.hash ? det : null
-      const acts = x?.status === 'ok' ? actionsBox(c) : null
-      const sum = (k: 'added' | 'removed') => x?.files.reduce((n, f) => n + (f[k] ?? 0), 0) ?? 0
-      return (
-        <Box flexDirection="column" gap={1} paddingX={2} paddingY={1} marginY={1} borderStyle="round" borderColor={laneColor(lay.cols[d.commits.indexOf(c)]!)}>
-          {(!x || x.status === 'loading') && <Text dimColor>Loading…</Text>}
-          {x?.status === 'error' && <Text color={DEL}>{x.message}</Text>}
-          {x?.status === 'ok' && acts && (
-            <Box flexDirection="column" gap={1}>
-              {/* Header: what the commit says and who made it, its actions on the right (below, when narrow). */}
-              <Box flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="flex-start" columnGap={2} rowGap={1}>
-                <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={24}>
-                  <Text bold>{x.message}</Text>
-                  {(c.kind === 'commit' || c.kind === 'stash') && (
-                    <Text dimColor>
-                      {x.author} &lt;{x.email}&gt; · {shortDate(x.date)} · {c.kind === 'stash' ? 'stash ' : ''}
-                      <Text mono>{c.hash.slice(0, 7)}</Text>
-                      {x.parents.length > 0 && (
-                        <Text>
-                          {' ← '}
-                          <Text mono>{x.parents.map(p => p.slice(0, 7)).join(', ')}</Text>
-                        </Text>
-                      )}
-                    </Text>
-                  )}
-                </Box>
-                {acts.menus}
-              </Box>
-              {acts.rest}
-              <Box flexDirection="column">
-                <Text dimColor>
-                  {x.files.length} file{x.files.length === 1 ? '' : 's'} changed
-                  {x.files.length > 1 && x.files.some(f => f.added !== null) && (
-                    <Text mono>
-                      {'  '}
-                      <Text color={ADD}>+{sum('added')}</Text> <Text color={DEL}>−{sum('removed')}</Text>
-                    </Text>
-                  )}
-                </Text>
-                {x.files.slice(0, MAX_FILES).map(fileRow)}
-                {x.files.length > MAX_FILES && (
-                  <Text dimColor>
-                    {x.files.length - MAX_FILES} more not shown. See them all with{' '}
-                    {c.kind === 'working' ? 'git status' : `git show --stat ${c.hash.slice(0, 7)}`}
-                  </Text>
-                )}
-              </Box>
-            </Box>
-          )}
-        </Box>
-      )
-    }
-
-    // Only the terminal and desktop draw a Client (another table may still hand one out, drawn as nothing).
-    const Client = (e.surface === 'terminal' || e.surface === 'desktop') && 'Client' in els ? els.Client : null
-    const graphHead = Svg ? (
-      <Svg source={`<svg xmlns="http://www.w3.org/2000/svg" width="${graphWidth(lay.lanes, gap)}" height="16"/>`} alt="graph column" height={16} />
-    ) : (
-      <Box width={lay.lanes * 2}>
-        <Text> </Text>
-      </Box>
-    )
-    const head = (label: string, cols: number) => (
-      <Box width={cols} flexShrink={0}>
-        <Text dimColor bold wrap="truncate">
-          {label}
-        </Text>
-      </Box>
-    )
-    // Where a Client can be drawn its dividers drag to resize the columns; elsewhere the heads are plain.
-    const columnHeads = (
-      <Box flexDirection="row" gap={1}>
-        {graphHead}
-        {Client ? (
-          <Client key="columns" module="./columns.ts" props={{ widths: w, showDate }} height={1} flexGrow={1} />
-        ) : (
-          [
-            <Box width="100%" flexShrink={1} minWidth={0}>
-              <Text dimColor bold>
-                Description
-              </Text>
-            </Box>,
-            showDate && head('Date', w.date),
-            head('Author', w.author),
-            head('Commit', w.commit),
-          ]
-        )}
-      </Box>
-    )
-
-    // Every text cell of a row opens it (a Button holds only text, so the graph and badges cannot),
-    // and the whole row lights under the pointer so it reads as one target.
-    // The terminal opens a row from any of its text cells (a Button holds only text). The desktop lays
-    // one blank Button over the whole row instead: a Button takes no size, so a run of em spaces
-    // spans it, clipped to the row. Spaces over a terminal row would blank its text, hence cells there.
-    const overlay = e.surface === 'desktop'
-    // The terminal's Button wraps its label whatever the Text says: one row keeps each cell one line.
-    const oneRow = e.surface === 'terminal' ? 1 : undefined
-    const cell = (c: Commit, part: string, text: string, extra: Record<string, unknown> = {}) =>
-      overlay ? (
-        <Text dimColor wrap="truncate" {...extra}>
-          {text}
-        </Text>
-      ) : (
-        <Button key={`c:${c.hash}:${part}`} plain onPress={() => void selectCommit($, c.hash)}>
-          <Text dimColor wrap="truncate" {...extra}>
-            {text}
-          </Text>
-        </Button>
-      )
-    const rowOf = (c: Commit, r: number) => (
-      <Box flexDirection="column">
-        <Box key={`row:${c.hash}`} flexDirection="row" alignItems="center" gap={1} hover={{ backgroundColor: HOVER }}>
-          <Box flexShrink={0}>{graphCell(r)}</Box>
-          {description(c, r)}
-          {showDate && (
-            <Box width={w.date} flexShrink={0} overflow="hidden" height={oneRow}>
-              {cell(c, 'date', c.date)}
-            </Box>
-          )}
-          <Box width={w.author} flexShrink={0} overflow="hidden" height={oneRow}>
-            {cell(c, 'author', c.author)}
-          </Box>
-          <Box width={w.commit} flexShrink={0} overflow="hidden" height={oneRow}>
-            {cell(c, 'hash', c.kind === 'working' ? '*' : c.hash.slice(0, 7), { mono: true })}
-          </Box>
-          {overlay && (
-            <Box position="absolute" top={0} left={0} right={0} bottom={0} overflow="hidden">
-              <Button key={`c:${c.hash}:row`} plain onPress={() => void selectCommit($, c.hash)}>
-                {ROW_FILL}
-              </Button>
-            </Box>
-          )}
-        </Box>
-        {v.selected === c.hash && detailsBox(c)}
-      </Box>
-    )
-
-    // The rows the search lets through, by their place in the graph; windows count these.
-    const shown = q ? d.commits.flatMap((c, r) => (matches(c, q) ? [r] : [])) : d.commits.map((_, r) => r)
-    // Draw rows from the window's start until the size budget is spent.
-    let start = Math.min(v.offset, Math.max(0, shown.length - 1))
-    // Each row drawn and measured once per draw: the window below slides over them.
-    const memo = new Map<number, { el: ReturnType<typeof rowOf>; size: number }>()
-    const at = (i: number) => {
-      let m = memo.get(i)
-      if (!m) {
-        const el = rowOf(d.commits[shown[i]!]!, shown[i]!)
-        m = { el, size: sizeOf(el) }
-        memo.set(i, m)
-      }
-      return m
-    }
-    const fits = (from: number) => {
-      let n = 0
-      for (let i = from, used = 0; i < shown.length; i++, n++) {
-        used += at(i).size
-        if (used > BUDGET && n > 0) break
-      }
-      return n
-    }
-    let count0 = fits(start)
-    // Opening a row grows only that row, so when it no longer fits it is the very next one past
-    // the end: the window then moves down, as few rows as it takes, to keep it and its actions drawn.
-    // Only until the window pages (Show newer or older), so paging always moves away from an open row.
-    const open = v.selected ? shown.findIndex(r => d.commits[r]!.hash === v.selected) : -1
-    if (open === start + count0 && v.openedAt === v.offset) while (open >= start + count0 && start < open) count0 = fits(++start)
-    const rows = Array.from({ length: count0 }, (_, k) => at(start + k).el)
-    const end = start + rows.length
-    // Show newer goes back to where Show older came from; with nothing remembered (after a
-    // reload) it is the rows just above this one that fit the budget.
-    let newer = start
-    for (let i = start - 1, size = 0; i >= 0; i--) {
-      size += at(i).size
-      if (size > BUDGET && newer < start) break
-      newer = i
-    }
-    const came = back.at(-1)
-    if (came !== undefined && came < start) newer = came
-    const total = `${shown.length}${d.hasMore ? '+' : ''}`
-    const canOlder = end < shown.length || d.hasMore
-    const count = !q ? `Rows ${start + 1}–${end} of ${total}` : shown.length ? `${start + 1}–${end} of ${total} matching “${q}”` : `Nothing matches “${q}”${d.hasMore ? ' yet: Show older commits searches further' : ''}`
-
-    return keep(
-      <Box flexDirection="column">
-        {header(count)}
-        {columnHeads}
-        {start > 0 && (
-          <Box marginY={1}>
-            <Button key="newer" label="Show newer commits" onPress={() => void showNewer($, newer)} />
-          </Box>
-        )}
-        {rows}
-        {canOlder && (
-          <Box marginTop={1}>
-            <Button key="older" label="Show older commits" onPress={() => void showOlder($, start, end, shown.length, d.hasMore)} />
+        {v.file === f.path && fd?.path === f.path && (
+          <Box flexDirection="column" marginLeft={2}>
+            {fd.status === 'loading' && <Text dimColor>Loading diff…</Text>}
+            {fd.status === 'error' && <Text color={DEL}>{fd.text}</Text>}
+            {fd.status === 'ok' && !fd.text.trim() && <Text dimColor>{f.oldPath ? 'Renamed with no content changes.' : 'No textual changes.'}</Text>}
+            {fd.status === 'ok' && fd.text.trim() && <Code source={fd.text} format="diff" path={f.path} />}
+            {fd.isTruncated && <Text dimColor>Diff cut short: it is too long to show here.</Text>}
           </Box>
         )}
       </Box>
     )
   }
+
+  const actionsBox = (c: Commit) => {
+    const groups = groupsFor(c, {
+      branch: d.branch,
+      headHash: d.headHash,
+      remotes: d.remotes,
+      localBranches: d.localBranches,
+      operation: d.operation,
+    })
+    const all = groups.flatMap(g => g.actions)
+    const open = pend && pend.hash === c.hash ? all.find(a => a.id === pend.id) : undefined
+    // One dropdown per group (the commit, each branch, tag or stash on it) in place of a wall of
+    // buttons: its first entry names the group, picking an action opens its confirm step.
+    // The panel's header carries the dropdowns; the confirm step (and, without Select, the buttons) sits below.
+    const menus = Select ? (
+      <Box flexDirection="row" flexWrap="wrap" gap={1} flexShrink={0}>
+        {groups.map(g => (
+          <Select
+            key={`g:${c.hash}:${g.title}`}
+            options={[{ value: NONE, label: g.title }, ...g.actions.map(a => ({ value: a.id, label: a.label }))]}
+            value={open && g.actions.includes(open) ? open.id : NONE}
+            onSelect={(id, ev) => {
+              const a = g.actions.find(x => x.id === id)
+              if (a) void startAction($, c.hash, a, ev.surface)
+              else if (open && g.actions.includes(open)) void setPending($, null)
+            }}
+          />
+        ))}
+      </Box>
+    ) : null
+    const rest =
+      !Select || open ? (
+        <Box flexDirection="column" gap={1}>
+          {!Select &&
+            groups.map(g => (
+              <Box flexDirection="column">
+                <Text dimColor bold>
+                  {g.title}
+                </Text>
+                <Box flexDirection="row" flexWrap="wrap" gap={1}>
+                  {g.actions.map(a => (
+                    <Button key={`a:${c.hash}:${a.id}`} label={a.label} onPress={press => void startAction($, c.hash, a, press.surface)} />
+                  ))}
+                </Box>
+              </Box>
+            ))}
+          {open && pend && confirmBox(open, pend)}
+        </Box>
+      ) : null
+    return { menus, rest }
+  }
+
+  const confirmBox = (a: Action, p: Pending) => {
+    // While a merge, cherry-pick, revert or rebase is stopped, only its own continue/abort can run.
+    const stopped = !!d.operation && !a.id.startsWith('working:')
+    // A required name shows as a placeholder until typed; an optional one left empty is simply left out.
+    const shown = p.value.trim() || (a.input && !a.input.isOptional ? `<${a.input.label.toLowerCase()}>` : '')
+    const cmds = a.run ? describe(a.run(shown, p.choice)) : ''
+    return (
+      <Box flexDirection="column" gap={1} padding={1} borderStyle="round" borderColor={a.isDanger ? DEL : '#898781'}>
+        <Text bold>{a.label.replace('…', '')}</Text>
+        {a.choice && !Select && (
+          <Box flexDirection="row" flexWrap="wrap" gap={1}>
+            {a.choice.options.map(o => (
+              <Button
+                key={`choice:${a.id}:${o.value}`}
+                variant={o.value === p.choice ? 'primary' : undefined}
+                label={o.label}
+                onPress={() => void setPending($, { ...p, choice: o.value, status: 'idle', message: '' })}
+              />
+            ))}
+          </Box>
+        )}
+        {a.choice && Select && (
+          <Select
+            key={`choice:${a.id}`}
+            label={a.choice.label}
+            options={a.choice.options}
+            value={p.choice}
+            onSelect={(value: string) => void setPending($, { ...p, choice: value, status: 'idle', message: '' })}
+          />
+        )}
+        {a.input && !Input && !a.input.isOptional && (
+          <Text dimColor>{a.input.label} can be typed in the terminal or the desktop app.</Text>
+        )}
+        {a.input && Input && (
+          <Input
+            key={`input:${a.id}`}
+            label={a.input.label}
+            value={p.value}
+            autoFocus
+            submitLabel={a.label.replace('…', '')}
+            onInput={(value: string) => {
+              if (pendingNow) pendingNow = { ...pendingNow, value }
+            }}
+            onSubmit={(value: string) => {
+              if (!pendingNow) return
+              pendingNow = { ...pendingNow, value }
+              void runAction($, a)
+            }}
+          />
+        )}
+        <Text dimColor mono>
+          {cmds}
+        </Text>
+        {a.isDanger && <Text color={DEL}>This cannot be undone from here.</Text>}
+        {p.status === 'error' && <Text color={DEL}>{p.message}</Text>}
+        {stopped && <Text color="#f5a524">The {d.operation} stopped. Resolve the conflicts, then continue or abort it from Uncommitted Changes.</Text>}
+        {p.status === 'running' ? (
+          <Text dimColor>Running…</Text>
+        ) : (
+          <Box flexDirection="row" gap={1}>
+            {(!a.input || (!Input && a.input.isOptional)) && !stopped && (
+              <Button key={`run:${a.id}`} variant="primary" label={a.isDanger ? `Yes, ${a.label.replace('…', '').toLowerCase()}` : 'Run'} onPress={() => void runAction($, a)} />
+            )}
+            <Button key={`cancel:${a.id}`} role="dismiss" label="Cancel" onPress={() => void setPending($, null)} />
+          </Box>
+        )}
+      </Box>
+    )
+  }
+
+  const detailsBox = (c: Commit) => {
+    const x = det && det.hash === c.hash ? det : null
+    const acts = x?.status === 'ok' ? actionsBox(c) : null
+    const sum = (k: 'added' | 'removed') => x?.files.reduce((n, f) => n + (f[k] ?? 0), 0) ?? 0
+    return (
+      <Box flexDirection="column" gap={1} paddingX={2} paddingY={1} marginY={1} borderStyle="round" borderColor={laneColor(lay.cols[d.commits.indexOf(c)]!)}>
+        {(!x || x.status === 'loading') && <Text dimColor>Loading…</Text>}
+        {x?.status === 'error' && <Text color={DEL}>{x.message}</Text>}
+        {x?.status === 'ok' && acts && (
+          <Box flexDirection="column" gap={1}>
+            {/* Header: what the commit says and who made it, its actions on the right (below, when narrow). */}
+            <Box flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="flex-start" columnGap={2} rowGap={1}>
+              <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={24}>
+                <Text bold>{x.message}</Text>
+                {(c.kind === 'commit' || c.kind === 'stash') && (
+                  <Text dimColor>
+                    {x.author} &lt;{x.email}&gt; · {shortDate(x.date)} · {c.kind === 'stash' ? 'stash ' : ''}
+                    <Text mono>{c.hash.slice(0, 7)}</Text>
+                    {x.parents.length > 0 && (
+                      <Text>
+                        {' ← '}
+                        <Text mono>{x.parents.map(p => p.slice(0, 7)).join(', ')}</Text>
+                      </Text>
+                    )}
+                  </Text>
+                )}
+              </Box>
+              {acts.menus}
+            </Box>
+            {acts.rest}
+            <Box flexDirection="column">
+              <Text dimColor>
+                {x.files.length} file{x.files.length === 1 ? '' : 's'} changed
+                {x.files.length > 1 && x.files.some(f => f.added !== null) && (
+                  <Text mono>
+                    {'  '}
+                    <Text color={ADD}>+{sum('added')}</Text> <Text color={DEL}>−{sum('removed')}</Text>
+                  </Text>
+                )}
+              </Text>
+              {x.files.slice(0, MAX_FILES).map(fileRow)}
+              {x.files.length > MAX_FILES && (
+                <Text dimColor>
+                  {x.files.length - MAX_FILES} more not shown. See them all with{' '}
+                  {c.kind === 'working' ? 'git status' : `git show --stat ${c.hash.slice(0, 7)}`}
+                </Text>
+              )}
+            </Box>
+          </Box>
+        )}
+      </Box>
+    )
+  }
+
+  // Only the terminal and desktop draw a Client (another table may still hand one out, drawn as nothing).
+  const Client = (e.surface === 'terminal' || e.surface === 'desktop') && 'Client' in els ? els.Client : null
+  const graphHead = Svg ? (
+    <Svg source={`<svg xmlns="http://www.w3.org/2000/svg" width="${graphWidth(lay.lanes, gap)}" height="16"/>`} alt="graph column" height={16} />
+  ) : (
+    <Box width={lay.lanes * 2}>
+      <Text> </Text>
+    </Box>
+  )
+  const head = (label: string, cols: number) => (
+    <Box width={cols} flexShrink={0}>
+      <Text dimColor bold wrap="truncate">
+        {label}
+      </Text>
+    </Box>
+  )
+  // Where a Client can be drawn its dividers drag to resize the columns; elsewhere the heads are plain.
+  const columnHeads = (
+    <Box flexDirection="row" gap={1}>
+      {graphHead}
+      {Client ? (
+        <Client key="columns" module="./columns.ts" props={{ widths: w, showDate }} height={1} flexGrow={1} />
+      ) : (
+        [
+          <Box width="100%" flexShrink={1} minWidth={0}>
+            <Text dimColor bold>
+              Description
+            </Text>
+          </Box>,
+          showDate && head('Date', w.date),
+          head('Author', w.author),
+          head('Commit', w.commit),
+        ]
+      )}
+    </Box>
+  )
+
+  // Every text cell of a row opens it (a Button holds only text, so the graph and badges cannot),
+  // and the whole row lights under the pointer so it reads as one target.
+  // The terminal opens a row from any of its text cells (a Button holds only text). The desktop lays
+  // one blank Button over the whole row instead: a Button takes no size, so a run of em spaces
+  // spans it, clipped to the row. Spaces over a terminal row would blank its text, hence cells there.
+  const overlay = e.surface === 'desktop'
+  // The terminal's Button wraps its label whatever the Text says: one row keeps each cell one line.
+  const oneRow = e.surface === 'terminal' ? 1 : undefined
+  const cell = (c: Commit, part: string, text: string, extra: Record<string, unknown> = {}) =>
+    overlay ? (
+      <Text dimColor wrap="truncate" {...extra}>
+        {text}
+      </Text>
+    ) : (
+      <Button key={`c:${c.hash}:${part}`} plain onPress={() => void selectCommit($, c.hash)}>
+        <Text dimColor wrap="truncate" {...extra}>
+          {text}
+        </Text>
+      </Button>
+    )
+  const rowOf = (c: Commit, r: number) => (
+    <Box flexDirection="column">
+      <Box key={`row:${c.hash}`} flexDirection="row" alignItems="center" gap={1} hover={{ backgroundColor: HOVER }}>
+        <Box flexShrink={0}>{graphCell(r)}</Box>
+        {description(c, r)}
+        {showDate && (
+          <Box width={w.date} flexShrink={0} overflow="hidden" height={oneRow}>
+            {cell(c, 'date', c.date)}
+          </Box>
+        )}
+        <Box width={w.author} flexShrink={0} overflow="hidden" height={oneRow}>
+          {cell(c, 'author', c.author)}
+        </Box>
+        <Box width={w.commit} flexShrink={0} overflow="hidden" height={oneRow}>
+          {cell(c, 'hash', c.kind === 'working' ? '*' : c.hash.slice(0, 7), { mono: true })}
+        </Box>
+        {overlay && (
+          <Box position="absolute" top={0} left={0} right={0} bottom={0} overflow="hidden">
+            <Button key={`c:${c.hash}:row`} plain onPress={() => void selectCommit($, c.hash)}>
+              {ROW_FILL}
+            </Button>
+          </Box>
+        )}
+      </Box>
+      {v.selected === c.hash && detailsBox(c)}
+    </Box>
+  )
+
+  // The rows the search lets through, by their place in the graph; windows count these.
+  const shown = q ? d.commits.flatMap((c, r) => (matches(c, q) ? [r] : [])) : d.commits.map((_, r) => r)
+  // Draw rows from the window's start until the size budget is spent.
+  let start = Math.min(v.offset, Math.max(0, shown.length - 1))
+  // Each row drawn and measured once per draw: the window below slides over them.
+  const memo = new Map<number, { el: ReturnType<typeof rowOf>; size: number }>()
+  const at = (i: number) => {
+    let m = memo.get(i)
+    if (!m) {
+      const el = rowOf(d.commits[shown[i]!]!, shown[i]!)
+      m = { el, size: sizeOf(el) }
+      memo.set(i, m)
+    }
+    return m
+  }
+  const fits = (from: number) => {
+    let n = 0
+    for (let i = from, used = 0; i < shown.length; i++, n++) {
+      used += at(i).size
+      if (used > BUDGET && n > 0) break
+    }
+    return n
+  }
+  let count0 = fits(start)
+  // Opening a row grows only that row, so when it no longer fits it is the very next one past
+  // the end: the window then moves down, as few rows as it takes, to keep it and its actions drawn.
+  // Only until the window pages (Show newer or older), so paging always moves away from an open row.
+  const open = v.selected ? shown.findIndex(r => d.commits[r]!.hash === v.selected) : -1
+  if (open === start + count0 && v.openedAt === v.offset) while (open >= start + count0 && start < open) count0 = fits(++start)
+  const rows = Array.from({ length: count0 }, (_, k) => at(start + k).el)
+  const end = start + rows.length
+  // Show newer goes back to where Show older came from; with nothing remembered (after a
+  // reload) it is the rows just above this one that fit the budget.
+  let newer = start
+  for (let i = start - 1, size = 0; i >= 0; i--) {
+    size += at(i).size
+    if (size > BUDGET && newer < start) break
+    newer = i
+  }
+  const came = back.at(-1)
+  if (came !== undefined && came < start) newer = came
+  const total = `${shown.length}${d.hasMore ? '+' : ''}`
+  const canOlder = end < shown.length || d.hasMore
+  const count = !q ? `Rows ${start + 1}–${end} of ${total}` : shown.length ? `${start + 1}–${end} of ${total} matching “${q}”` : `Nothing matches “${q}”${d.hasMore ? ' yet: Show older commits searches further' : ''}`
+
+  return keep(
+    <Box flexDirection="column">
+      {header(count)}
+      {columnHeads}
+      {start > 0 && (
+        <Box marginY={1}>
+          <Button key="newer" label="Show newer commits" onPress={() => void showNewer($, newer)} />
+        </Box>
+      )}
+      {rows}
+      {canOlder && (
+        <Box marginTop={1}>
+          <Button key="older" label="Show older commits" onPress={() => void showOlder($, start, end, shown.length, d.hasMore)} />
+        </Box>
+      )}
+    </Box>
+  )
 }

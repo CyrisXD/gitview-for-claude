@@ -55,6 +55,7 @@ export async function loadGraph(run: Run, limit: number, only: string | null = n
   const all = parseLog(log.stdout)
   const changed = status.exitCode === 0 ? status.stdout.split('\n').filter(Boolean).length : 0
   const headHash = head.stdout.trim()
+  const refs = [log.stdout, stash.stdout, headHash, remotes.stdout, branch.stdout, locals.stdout, operation].join('\x00')
   // Every branch by full name, local then remote, without the remotes' HEAD pointers.
   const branches = locals.stdout.split('\n').filter(r => r && !r.endsWith('/HEAD'))
   // Narrowed to a branch, the uncommitted row shows only when HEAD is in its history.
@@ -87,8 +88,8 @@ export async function loadGraph(run: Run, limit: number, only: string | null = n
     branches,
     operation,
     // What decides a redraw: everything but the relative parts that do not move.
-    raw: [log.stdout, stash.stdout, status.stdout, headHash, remotes.stdout, branch.stdout, locals.stdout, operation].join('\x00'),
-    refs: [log.stdout, stash.stdout, headHash, remotes.stdout, branch.stdout, locals.stdout, operation].join('\x00'),
+    raw: `${refs}\x00${status.stdout}`,
+    refs,
   }
 }
 
@@ -145,7 +146,7 @@ export async function loadDetails(run: Run, c: Commit): Promise<Details> {
     run(git('diff', ...SAFE_DIFF, '--name-status', '-z', '-M', ...range)),
     run(git('diff', ...SAFE_DIFF, '--numstat', '-z', '-M', ...range)),
     c.kind === 'working'
-      ? Promise.resolve({ exitCode: 0, stdout: '', stderr: '' })
+      ? none
       : run(git('show', '-s', '--format=%an%x1f%ae%x1f%aD%x1f%P%x1f%B', c.hash)),
     c.kind === 'working'
       ? run(git('ls-files', '--others', '--exclude-standard', '-z'))
