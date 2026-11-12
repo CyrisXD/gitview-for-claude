@@ -53,6 +53,9 @@ export function merge(commits: Commit[], stashes: Commit[], working: Commit | nu
 // One segment of a line, from row r1 to r2 (r2 = r1 + 1), x in lane units.
 export type Edge = { x1: number; r1: number; x2: number; r2: number; lane: number }
 export type Layout = { cols: number[]; edges: Edge[]; lanes: number }
+// A history with dozens of open branches made the graph wider than the pane, and the
+// description column (subjects and badges) got no room at all.
+export const MAX_LANES = 10
 
 // Lanes hold the hash each is waiting for. A commit takes the lane waiting
 // for it (or a free one), hands it to its first parent and opens lanes for
@@ -108,7 +111,8 @@ export function layout(commits: Commit[]): Layout {
       lane: g.lane,
     })),
   )
-  return { cols, edges, lanes: width }
+  // Lanes past the cap are clipped at the graph's right edge, so the description keeps its room.
+  return { cols, edges, lanes: Math.min(width, MAX_LANES) }
 }
 
 export const ROW_PX = 28
@@ -155,7 +159,7 @@ export function rowSvg(commits: Commit[], lay: Layout, r: number, isHead: boolea
     }
   }
 
-  const cx = x(lay.cols[r]!)
+  const cx = x(Math.min(lay.cols[r]!, lay.lanes - 1)) // a commit on a clipped lane sits at the edge
   const cy = H / 2
   const color = laneColor(lay.cols[r]!)
   let node: string

@@ -6,7 +6,7 @@ import type { On } from 'claude-code'
 import { describe, groupsFor } from '../hooks/actions'
 import { branchOptions } from '../hooks/register'
 import { WORKING } from '../hooks/graph'
-import { badges } from '../hooks/graph'
+import { MAX_LANES, badges, graphWidth, layout, rowSvg } from '../hooks/graph'
 import { parseLog } from '../hooks/graph'
 
 // A typed /gitview; the rest of a real command.run input is left out.
@@ -430,4 +430,16 @@ test('hundreds of branches still draw: the branch menu stays within 64 options',
   expect(opts.length).toBeLessThanOrEqual(64)
   expect(opts[0]!.label).toBe('All branches (601)')
   expect(opts.at(-1)!.value).toBe('refs/remotes/origin/b599')
+})
+
+test('many open branches cap the graph at MAX_LANES so the description keeps its room', async () => {
+  // 30 branch tips, each one commit off a shared root far below: 30 lanes open at once.
+  const tips = Array.from({ length: 30 }, (_, i) => row(`aaaa${String(i).padStart(4, '0')}`, 'ccccccc1', `b${i}`, `Tip ${i}`)).join('')
+  const cs = parseLog(tips + row('ccccccc1', '', '', 'Root'))
+  const lay = layout(cs)
+  expect(lay.lanes).toBe(MAX_LANES)
+  const svg = rowSvg(cs, lay, 29, false)
+  expect(svg).toContain(`width="${graphWidth(MAX_LANES)}"`)
+  const cx = Number(svg.match(/<circle cx="([\d.]+)"/)![1])
+  expect(cx).toBeLessThanOrEqual(graphWidth(MAX_LANES))
 })

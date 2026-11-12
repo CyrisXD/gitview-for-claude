@@ -666,7 +666,7 @@ async function drawPane($: EngineInterface, e: RenderInput) {
       )
     }
     const mark = c.kind === 'working' ? '◌' : c.kind === 'stash' ? '◎' : c.parents.length > 1 ? '◯' : '●'
-    return <Text color={laneColor(lay.cols[r]!)}>{'  '.repeat(lay.cols[r]!) + mark}</Text>
+    return <Text color={laneColor(lay.cols[r]!)}>{'  '.repeat(Math.min(lay.cols[r]!, lay.lanes - 1)) + mark}</Text>
   }
 
   // Badges sit outside the Button: a desktop button drops a Text's background.
