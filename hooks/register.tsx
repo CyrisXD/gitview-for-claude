@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderInput } from 'claude-code'
 
-import type { ActionResult, Commit, Details, FileChange, FileDiff, GraphData, Pending, RefreshState, View, Widths } from '../types'
+import type { ActionResult, Commit, Details, FileChange, FileDiff, GraphData, Pending, RefreshState, RemotesMode, View, Widths } from '../types'
 import { STAGE_LISTED, describe, groupsFor, visible } from './actions'
 import { DESC_MIN, MIN } from './columns'
 import type { Action } from './actions'
@@ -36,16 +36,18 @@ const diff = atom({ plugin: 'gitview', key: 'diff' } as const, null, { shape: 'd
 const pending = atom({ plugin: 'gitview', key: 'pending' } as const, null, { shape: 'pending-1' })
 const result = atom({ plugin: 'gitview', key: 'result' } as const, null, { shape: 'result-1' })
 const refreshing = atom({ plugin: 'gitview', key: 'refreshing' } as const, null as RefreshState | null, { shape: 'refreshing-1' })
-export const WIDTHS: Widths = { date: 17, author: 14, commit: 8 }
-const widths = atom({ plugin: 'gitview', key: 'widths' } as const, WIDTHS, { shape: 'widths-1' })
+export const WIDTHS: Widths = { date: 17, author: 14, commit: 9 }
+const widths = atom({ plugin: 'gitview', key: 'widths' } as const, WIDTHS, { shape: 'widths-2' })
 const only = atom({ plugin: 'gitview', key: 'only' } as const, null as string | null, { shape: 'only-1' })
 const filter = atom({ plugin: 'gitview', key: 'filter' } as const, '', { shape: 'filter-1' })
-const spacing = atom({ plugin: 'gitview', key: 'spacing' } as const, 'normal' as Spacing, { shape: 'spacing-1' })
+const spacing = atom({ plugin: 'gitview', key: 'spacing' } as const, 'auto' as Spacing | 'auto', { shape: 'spacing-2' })
+const remotes = atom({ plugin: 'gitview', key: 'remotes' } as const, 'auto' as RemotesMode, { shape: 'remotes-1' })
 
 // Mirrors of what the handlers need, so they never wait on a read.
 let current: View = { limit: PAGE, offset: 0, selected: null, file: null }
 let commits: Commit[] = []
 let onlyRef: string | null = null // the branch the history is narrowed to, a full ref name
+let remotesMode: RemotesMode = 'auto'
 let adopted = false // whether a draw has handed the mirrors $.state's values yet
 let last = '' // the last git output written, so an unchanged poll does not redraw
 let lastRefs = '' // the same without the working tree's status
@@ -89,6 +91,18 @@ export const branchOptions = (branches: string[], narrowed: string | null) => {
     ...shown.map(r => ({ value: r, label: visible(r.replace(/^refs\/(heads|remotes)\//, '')) })),
   ]
 }
+
+// A date in the room its column has: 12 Nov 2026 23:14, then 12 Nov 23:14, 12 Nov, 12.
+export const fitDate = (raw: string, cols: number) => {
+  const m = raw.match(/^(\d{1,2}) (\w{3}) \d{4} (\d\d:\d\d)$/)
+  if (!m || cols >= raw.length) return raw
+  return cols >= 12 ? `${m[1]} ${m[2]} ${m[3]}` : cols >= 6 ? `${m[1]} ${m[2]}` : m[1]!
+}
+// A short hash in the commit column: the desktop's mono glyphs run wider than a cell.
+export const fitHash = (hash: string, cols: number) => hash.slice(0, Math.max(4, Math.min(7, cols - 2)))
+// Badges a row shows before a "+n": the subject keeps its room beside them.
+const MAX_BADGES = 2
+const BADGE_CHARS = 22
 
 // git's long answers (a stash apply prints the whole status) cut to their first lines.
 export const lines = (s: string, n: number) => {
@@ -204,12 +218,12 @@ async function load($: EngineInterface, force: boolean) {
   let raw: string
   let refs: string
   try {
-    let g = await loadGraph(runner($), current.limit, onlyRef)
+    let g = await loadGraph(runner($), current.limit, onlyRef, remotesMode)
     // The branch it was narrowed to is gone (deleted, renamed): back to every branch.
     if (g.status === 'error' && onlyRef && !g.branches?.includes(onlyRef)) {
       onlyRef = null
       await update($, only, () => null)
-      g = await loadGraph(runner($), current.limit, null)
+      g = await loadGraph(runner($), current.limit, null, remotesMode)
     }
     raw = g.raw
     refs = g.refs
@@ -425,6 +439,14 @@ async function setBranch($: EngineInterface, ref: string | null) {
   await refresh($, true)
 }
 
+async function setRemotes($: EngineInterface, mode: RemotesMode) {
+  remotesMode = mode
+  back = []
+  await update($, remotes, () => mode)
+  await setView($, { ...current, openedAt: undefined, offset: 0 })
+  await refresh($, true)
+}
+
 async function setFilter($: EngineInterface, q: string) {
   back = []
   await update($, filter, () => q)
@@ -544,7 +566,7 @@ async function drawPane($: EngineInterface, e: RenderInput) {
   const rf = await read($, refreshing)
   const narrowed = await read($, only)
   const sp = await read($, spacing)
-  const gap = SPACING[sp] ?? SPACING.normal
+  const rm = await read($, remotes)
   const typed = await read($, filter) // as typed: trimming it would eat the space before a second word
   const q = typed.trim()
   // After a reload the module's mirrors start over while $.state keeps the values: take them once.
@@ -556,13 +578,14 @@ async function drawPane($: EngineInterface, e: RenderInput) {
     commits = d.commits
     current = v
     onlyRef = narrowed
+    remotesMode = rm
   }
   const width = (e.props as { bodyColumns?: number }).bodyColumns ?? 120
   const w = await read($, widths)
   // A narrow pane drops Date so Description keeps room to read; Author always stays.
   const showDate = width >= 70
   // Unchanged values (a scroll tick's ask): the drawing they made last time.
-  const key = [e.surface, width, typed, narrowed, sp, d, v, det, fd, pend, res, rf, w].map(keyOf).join('\0')
+  const key = [e.surface, width, typed, narrowed, sp, rm, d, v, det, fd, pend, res, rf, w].map(keyOf).join('\0')
   if (kept?.key === key) return kept.tree as JSX.Element
   const keep = (tree: JSX.Element) => ((kept = { key, tree }), tree)
 
@@ -586,17 +609,33 @@ async function drawPane($: EngineInterface, e: RenderInput) {
             />
           </Box>
         )}
+        {/* With narrowed history the graph holds one branch, so remotes have nothing to hide. */}
+        {Select && !narrowed && (d.remoteCount ?? 0) > 0 && (
+          <Box flexShrink={0}>
+            <Select
+              key="remote-branches"
+              options={[
+                { value: 'auto', label: `Remotes: auto (${d.remotesHidden ? 'hidden' : 'shown'})` },
+                { value: 'show', label: 'Remotes: shown' },
+                { value: 'hide', label: 'Remotes: hidden' },
+              ]}
+              value={rm}
+              onSelect={(value: string) => void setRemotes($, value === 'show' || value === 'hide' ? value : 'auto')}
+            />
+          </Box>
+        )}
         {Select && e.surface !== 'terminal' && (
           <Box flexShrink={0}>
             <Select
               key="graph-spacing"
               options={[
+                { value: 'auto', label: 'Graph: auto' },
                 { value: 'compact', label: 'Graph: compact' },
                 { value: 'normal', label: 'Graph: normal' },
                 { value: 'wide', label: 'Graph: wide' },
               ]}
               value={sp}
-              onSelect={(value: string) => void update($, spacing, () => (value in SPACING ? (value as Spacing) : 'normal'))}
+              onSelect={(value: string) => void update($, spacing, () => (value in SPACING ? (value as Spacing) : 'auto'))}
             />
           </Box>
         )}
@@ -624,7 +663,7 @@ async function drawPane($: EngineInterface, e: RenderInput) {
         )}
       </Box>
       <Text dimColor wrap="truncate">
-        {[count, d.branch && `on ${d.branch}`, narrowed && `history of ${narrowed.replace(/^refs\/(heads|remotes)\//, '')}`].filter(Boolean).join(' · ')}
+        {[count, d.branch && `on ${d.branch}`, narrowed && `history of ${narrowed.replace(/^refs\/(heads|remotes)\//, '')}`, d.remotesHidden && `${d.remoteCount} remote branches hidden`].filter(Boolean).join(' · ')}
         {rf?.status === 'done' && <Text color={ADD}>{` · ✓ ${rf.text}`}</Text>}
       </Text>
       {/* Notices get full-width lines of their own: squeezed into the row above they wrapped word by word. */}
@@ -656,6 +695,8 @@ async function drawPane($: EngineInterface, e: RenderInput) {
   }
 
   const lay = layout(d.commits)
+  // Auto: compact once the graph is busy or the pane narrow, so the description keeps its room.
+  const gap = sp === 'auto' ? (lay.lanes > 6 || width < 100 ? SPACING.compact : SPACING.normal) : SPACING[sp] ?? SPACING.normal
   const Svg = e.surface !== 'terminal' && 'Svg' in els ? els.Svg : null
 
   const graphCell = (r: number) => {
@@ -672,13 +713,15 @@ async function drawPane($: EngineInterface, e: RenderInput) {
   // Badges sit outside the Button: a desktop button drops a Text's background.
   const description = (c: Commit, r: number) => {
     const lane = laneColor(lay.cols[r]!)
+    // Remote-only branches last: past the first two they go into the count, local ones stay seen.
+    const all = badges(c, d.remotes, d.localBranches).sort((x, y) => Number(x.kind === 'remote') - Number(y.kind === 'remote'))
     return (
       <Box flexDirection="row" alignItems="center" gap={1} width="100%" flexShrink={1} minWidth={0} overflow="hidden">
         {/* A badge keeps up to 14 cells (a tag like v1.2.0 whole) and gives way past that before
             the subject does: in a narrow column the subject kept 2 cells and wrapped. */}
-        {badges(c, d.remotes, d.localBranches).map(b => {
+        {all.slice(0, MAX_BADGES).map(b => {
           if (Svg) {
-            const label = `${clip(b.label, 28)}${b.isSynced ? ' ⇅' : ''}`
+            const label = `${clip(b.label, BADGE_CHARS)}${b.isSynced ? ' ⇅' : ''}`
             const pill = badgeSvg(b.kind, label, lane)
             return (
               <Box flexShrink={0}>
@@ -686,7 +729,7 @@ async function drawPane($: EngineInterface, e: RenderInput) {
               </Box>
             )
           }
-          const text = ` ${clip(b.label, 28)}${b.isSynced ? ' ⇅' : ''} `
+          const text = ` ${clip(b.label, BADGE_CHARS)}${b.isSynced ? ' ⇅' : ''} `
           return (
             <Box flexShrink={1} minWidth={Math.min(text.length, 14)} overflow="hidden">
               <Text {...badgeStyle(b.kind, lane, e.surface !== 'terminal')} wrap="truncate">
@@ -695,8 +738,13 @@ async function drawPane($: EngineInterface, e: RenderInput) {
             </Box>
           )
         })}
+        {all.length > MAX_BADGES && (
+          <Box flexShrink={0}>
+            <Text dimColor>+{all.length - MAX_BADGES}</Text>
+          </Box>
+        )}
         {/* The terminal's Button wraps its label whatever the Text says: one row keeps the row one line. */}
-        <Box flexShrink={1} minWidth={Math.min(12, c.subject.length)} overflow="hidden" height={e.surface === 'terminal' ? 1 : undefined}>
+        <Box flexShrink={1} minWidth={Math.min(20, c.subject.length)} overflow="hidden" height={e.surface === 'terminal' ? 1 : undefined}>
           <Button key={`c:${c.hash}`} plain onPress={() => void selectCommit($, c.hash)}>
             <Text bold={isHeadCommit(c) || undefined} italic={c.kind !== 'commit' || undefined} dimColor={c.kind === 'stash' || undefined} wrap="truncate">
               {visible(c.subject)}
@@ -991,14 +1039,14 @@ async function drawPane($: EngineInterface, e: RenderInput) {
         {description(c, r)}
         {showDate && (
           <Box width={w.date} flexShrink={0} overflow="hidden" height={oneRow}>
-            {cell(c, 'date', c.date)}
+            {cell(c, 'date', fitDate(c.date, w.date))}
           </Box>
         )}
         <Box width={w.author} flexShrink={0} overflow="hidden" height={oneRow}>
           {cell(c, 'author', c.author)}
         </Box>
         <Box width={w.commit} flexShrink={0} overflow="hidden" height={oneRow}>
-          {cell(c, 'hash', c.kind === 'working' ? '*' : c.hash.slice(0, 7), { mono: true })}
+          {cell(c, 'hash', c.kind === 'working' ? '*' : fitHash(c.hash, w.commit), { mono: true })}
         </Box>
         {overlay && (
           <Box position="absolute" top={0} left={0} right={0} bottom={0} overflow="hidden">

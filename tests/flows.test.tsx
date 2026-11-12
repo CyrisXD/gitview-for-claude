@@ -130,9 +130,12 @@ test('branch life: push gives a synced badge, rename and both deletes follow', a
   expect(await badge(ui, 'spike ⇅')).toBeDefined()
   await act(ui, branchLife, 2)
   expect(await badge(ui, 'spike-2')).toBeDefined()
-  expect(await badge(ui, 'origin/spike')).toBeDefined()
+  // main, spike-2 and origin/spike share the row: two badges, then a count.
+  expect(await badge(ui, 'origin/spike')).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: '+1' })).toBeDefined()
   await act(ui, branchLife, 3)
   expect(await badge(ui, 'spike-2')).toBeUndefined()
+  expect(await badge(ui, 'origin/spike')).toBeDefined()
   await act(ui, branchLife, 4)
   expect(await badge(ui, 'origin/spike')).toBeUndefined()
 })
@@ -441,8 +444,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await open($)
     const ui = await $.ui.mount({ ...PANE, surface })
     await ui.resize({ columns: 114, rows: 1, in: 'columns' })
-    // 114 across: Commit's divider at 105, Author's at 90, Date's at 72.
-    expect(await drawn(ui)).toEqual({ date: 17, author: 14, commit: 8 })
+    // 114 across: Commit's divider at 104, Author's at 89, Date's at 71.
+    expect(await drawn(ui)).toEqual({ date: 17, author: 14, commit: 9 })
     const drag = async (from: number, to: number) => {
       await ui.pointer({ type: 'down', x: from, y: 0, button: 'left', in: 'columns' })
       await ui.pointer({ type: 'move', x: to, y: 0, button: 'left', in: 'columns' })
@@ -450,23 +453,23 @@ for (const surface of ['terminal', 'desktop'] as const) {
     }
     // Pressing away from a divider picks nothing up.
     await drag(40, 30)
-    expect(await drawn(ui)).toEqual({ date: 17, author: 14, commit: 8 })
+    expect(await drawn(ui)).toEqual({ date: 17, author: 14, commit: 9 })
     // Mid-drag the dragged head says its width (the desktop redraws the rows only on release).
-    await ui.pointer({ type: 'down', x: 90, y: 0, button: 'left', in: 'columns' })
-    await ui.pointer({ type: 'move', x: 85, y: 0, button: 'left', in: 'columns' })
+    await ui.pointer({ type: 'down', x: 89, y: 0, button: 'left', in: 'columns' })
+    await ui.pointer({ type: 'move', x: 84, y: 0, button: 'left', in: 'columns' })
     expect(await ui.find({ type: 'Text', text: 'Author · 19', in: 'columns' })).toBeDefined()
-    await ui.pointer({ type: 'up', x: 85, y: 0, button: 'left', in: 'columns' })
+    await ui.pointer({ type: 'up', x: 84, y: 0, button: 'left', in: 'columns' })
     expect(await ui.find({ type: 'Text', text: /^Author$/, in: 'columns' })).toBeDefined()
-    await drag(86, 90) // back to 14
+    await drag(85, 89) // back to 14
     // Author's divider dragged 10 left (one cell off still catches it).
-    await drag(91, 81)
-    expect(await drawn(ui)).toEqual({ date: 17, author: 23, commit: 8 })
+    await drag(90, 80)
+    expect(await drawn(ui)).toEqual({ date: 17, author: 23, commit: 9 })
     // A redraw from the pane's own state keeps the widths (they were stored, not only shown),
     // and the rows are drawn at them too.
     await ui.redraw()
-    expect(await drawn(ui)).toEqual({ date: 17, author: 23, commit: 8 })
+    expect(await drawn(ui)).toEqual({ date: 17, author: 23, commit: 9 })
     // Date dragged far left stops at 60 wide.
-    await drag(62, 0)
+    await drag(61, 0)
     expect((await drawn(ui)).date).toBe(60)
   })
 }
@@ -489,8 +492,8 @@ test('columns: where no Client is drawn (mobile) the heads are plain and Author 
 })
 
 test('columns: a drag stops where Description keeps 12 cells, and a column at 4', () => {
-  // 60 across: Commit's divider at 51, Author's at 36, Date's at 18.
-  expect(dividers(WIDTHS, true, 60).map(d => d.x)).toEqual([51, 36, 18])
+  // 60 across: Commit's divider at 50, Author's at 35, Date's at 17.
+  expect(dividers(WIDTHS, true, 60).map(d => d.x)).toEqual([50, 35, 17])
   expect(dividers(dragTo(WIDTHS, true, 60, 'date', 0), true, 60)[2]!.x).toBe(12)
   expect(dragTo(WIDTHS, true, 60, 'commit', 59).commit).toBe(4)
 })

@@ -138,6 +138,9 @@ No. It runs `git` on your machine in the session's folder. The only network traf
 **How much history does it load?**
 200 commits at a time, with **Show older commits** at the bottom for more.
 
+**Why are some remote branches missing from the graph?**
+In a repository with more than 50 remote branches, **Remotes: auto** leaves out the history of remote branches you don't track locally, so the graph stays readable. Pick **Remotes: shown** to see them all, or choose one from the branch menu.
+
 ## Development
 
 ```

@@ -4,9 +4,9 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { describe, groupsFor } from '../hooks/actions'
-import { branchOptions } from '../hooks/register'
+import { branchOptions, fitDate, fitHash } from '../hooks/register'
 import { WORKING } from '../hooks/graph'
-import { MAX_LANES, badges, graphWidth, layout, rowSvg } from '../hooks/graph'
+import { MAX_LANES, SPACING, badges, graphWidth, layout, rowSvg } from '../hooks/graph'
 import { parseLog } from '../hooks/graph'
 
 // A typed /gitview; the rest of a real command.run input is left out.
@@ -442,4 +442,65 @@ test('many open branches cap the graph at MAX_LANES so the description keeps its
   expect(svg).toContain(`width="${graphWidth(MAX_LANES)}"`)
   const cx = Number(svg.match(/<circle cx="([\d.]+)"/)![1])
   expect(cx).toBeLessThanOrEqual(graphWidth(MAX_LANES))
+})
+
+// A repository with `n` remote branches; `ran` keeps every log's argv.
+function manyRemotes(on: On, n: number, log = LOG) {
+  const logs: string[][] = []
+  const remotesList = Array.from({ length: n }, (_, i) => `refs/remotes/origin/fix/b${i}`)
+  on('command.register', () => ({ value: { command: 'gitview' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('process.run', (_, e) => {
+    const a = e.argv.join(' ')
+    if (a.includes(' log ')) return (logs.push([...e.argv]), ok(log))
+    if (a.includes('rev-parse HEAD')) return ok('fffffff1\n')
+    if (a.includes('symbolic-ref')) return ok('main\n')
+    if (a.endsWith(' remote')) return ok('origin\n')
+    if (a.includes('%(upstream)')) return ok('refs/remotes/origin/main\nrefs/remotes/origin/gone\n')
+    if (a.includes('refs/heads refs/remotes')) return ok(['refs/heads/main', 'refs/remotes/origin/main', ...remotesList].join('\n') + '\n')
+    return ok('')
+  })
+  return logs
+}
+
+test('past 50 remote branches auto leaves their history out, keeping tracked ones; Remotes: shown brings them back', async ($, on) => {
+  const logs = manyRemotes(on, 80)
+  await $.command.run(OPEN)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const last = () => logs.at(-1)!
+  expect(last()).toContain('--exclude=refs/remotes/*')
+  expect(last()).toContain('refs/remotes/origin/main') // the upstream of main, which exists
+  expect(last()).not.toContain('refs/remotes/origin/gone') // an upstream that is gone is not asked for
+  expect(await ui.find({ type: 'Text', text: /81 remote branches hidden/ })).toBeDefined()
+  await ui.select({ key: 'remote-branches', value: 'show' })
+  expect(last()).not.toContain('--exclude=refs/remotes/*')
+  expect(await ui.find({ type: 'Text', text: /remote branches hidden/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a few remote branches are shown on auto', async ($, on) => {
+  const logs = manyRemotes(on, 5)
+  await $.command.run(OPEN)
+  expect(logs.at(-1)).not.toContain('--exclude=refs/remotes/*')
+})
+
+test('dates and hashes fit their columns', () => {
+  expect(fitDate('12 Nov 2026 23:14', 17)).toBe('12 Nov 2026 23:14')
+  expect(fitDate('12 Nov 2026 23:14', 12)).toBe('12 Nov 23:14')
+  expect(fitDate('12 Nov 2026 23:14', 8)).toBe('12 Nov')
+  expect(fitDate('12 Nov 2026 23:14', 4)).toBe('12')
+  expect(fitDate('*', 4)).toBe('*')
+  expect(fitHash('66b570f1234', 9)).toBe('66b570f')
+  expect(fitHash('66b570f1234', 8)).toBe('66b570')
+  expect(fitHash('66b570f1234', 4)).toBe('66b5')
+})
+
+test('auto spacing draws a busy graph compact', async ($, on) => {
+  const tips = Array.from({ length: 30 }, (_, i) => row(`aaaa${String(i).padStart(4, '0')}`, 'ccccccc1', `b${i}`, `Tip ${i}`)).join('')
+  manyRemotes(on, 0, tips + row('ccccccc1', '', '', 'Root'))
+  await $.command.run(OPEN)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const head = (await ui.findAll({ type: 'Svg' })).find(s => (s as { props?: { alt?: string } }).props?.alt === 'graph column') as unknown as { props: { source: string } }
+  expect(head.props.source).toContain(`width="${graphWidth(MAX_LANES, SPACING.compact)}"`)
+  await ui.unmount()
 })

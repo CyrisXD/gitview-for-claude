@@ -1,4 +1,4 @@
-import type { Commit, Details, FileChange, FileDiff, GraphData, Operation } from '../types'
+import type { Commit, Details, FileChange, FileDiff, GraphData, Operation, RemotesMode } from '../types'
 import { DATE, FORMAT, WORKING, merge, parseLog } from './graph'
 
 export type Run = (argv: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>
@@ -21,9 +21,24 @@ const OPERATIONS: [Operation, string][] = [
   ['rebase', 'REBASE_HEAD'],
 ]
 
+// More remote branches than this and auto leaves their history out: each one open opens a lane.
+export const AUTO_HIDE = 50
+
 // `only` (a full ref name, refs/heads/x or refs/remotes/o/x) narrows the history to what that branch reaches.
-export async function loadGraph(run: Run, limit: number, only: string | null = null): Promise<Graph> {
-  const revs = only ? [only, '--'] : ['--exclude=refs/stash', '--all']
+export async function loadGraph(run: Run, limit: number, only: string | null = null, remotesMode: RemotesMode = 'auto'): Promise<Graph> {
+  // Newest first: the branch menu can show only the first few dozen.
+  const locals = await run(git('for-each-ref', '--sort=-committerdate', '--format=%(refname)', 'refs/heads', 'refs/remotes'))
+  // Every branch by full name, local then remote, without the remotes' HEAD pointers.
+  const branches = locals.exitCode === 0 ? locals.stdout.split('\n').filter(r => r && !r.endsWith('/HEAD')) : []
+  const remoteCount = branches.filter(r => r.startsWith('refs/remotes/')).length
+  const remotesHidden = !only && (remotesMode === 'hide' || (remotesMode === 'auto' && remoteCount > AUTO_HIDE))
+  let revs = only ? [only, '--'] : ['--exclude=refs/stash', '--all']
+  if (remotesHidden) {
+    // A local branch's upstream stays, so ahead and behind still draw.
+    const up = await run(git('for-each-ref', '--format=%(upstream)', 'refs/heads'))
+    const tracked = up.stdout.split('\n').filter(r => branches.includes(r))
+    revs = ['--exclude=refs/stash', '--exclude=refs/remotes/*', '--all', ...tracked, '--']
+  }
   const log = await run(git('log', '--topo-order', `-n${limit + 1}`, DATE, FORMAT, ...revs))
   if (log.exitCode !== 0) {
     const fail = (status: GraphData['status'], message: string): Graph => ({
@@ -42,14 +57,12 @@ export async function loadGraph(run: Run, limit: number, only: string | null = n
     if (/does not have any commits/i.test(log.stderr)) return fail('empty', '')
     return fail('error', log.stderr.trim() || `git exited with ${log.exitCode}`)
   }
-  const [stash, status, head, remotes, branch, locals] = await Promise.all([
+  const [stash, status, head, remotes, branch] = await Promise.all([
     run(git('stash', 'list', DATE, FORMAT.replace('%D', '%gd'))),
     run(git('status', '--porcelain')),
     run(git('rev-parse', 'HEAD')),
     run(git('remote')),
     run(git('symbolic-ref', '--short', '-q', 'HEAD')),
-    // Newest first: the branch menu can show only the first few dozen.
-    run(git('for-each-ref', '--sort=-committerdate', '--format=%(refname)', 'refs/heads', 'refs/remotes')),
   ])
   // The pseudo-ref each stopped operation leaves; REBASE_HEAD is set while a rebase waits on a conflict.
   const ops = await Promise.all(OPERATIONS.map(([, ref]) => run(git('rev-parse', '-q', '--verify', ref))))
@@ -59,8 +72,6 @@ export async function loadGraph(run: Run, limit: number, only: string | null = n
   const changed = statusError ? 0 : status.stdout.split('\n').filter(Boolean).length
   const headHash = head.stdout.trim()
   const refs = [log.stdout, stash.stdout, headHash, remotes.stdout, branch.stdout, locals.stdout, operation].join('\x00')
-  // Every branch by full name, local then remote, without the remotes' HEAD pointers.
-  const branches = locals.stdout.split('\n').filter(r => r && !r.endsWith('/HEAD'))
   // Narrowed to a branch, the uncommitted row shows only when HEAD is in its history.
   const working: Commit | null =
     (changed || statusError) && headHash && (!only || all.some(c => c.hash === headHash))
@@ -90,6 +101,8 @@ export async function loadGraph(run: Run, limit: number, only: string | null = n
     localBranches: branches.filter(r => r.startsWith('refs/heads/')).map(r => r.slice('refs/heads/'.length)),
     branches,
     operation,
+    remoteCount,
+    remotesHidden,
     // What decides a redraw: everything but the relative parts that do not move.
     raw: `${refs}\x00${status.stdout}`,
     refs,

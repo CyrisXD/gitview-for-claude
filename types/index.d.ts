@@ -23,7 +23,12 @@ export type GraphData = {
   branches?: string[]
   // A merge, cherry-pick, revert or rebase stopped part way (a conflict); absent in values stored before it existed.
   operation?: Operation | null
+  remoteCount?: number // remote branches in the repository
+  remotesHidden?: boolean // their history is left out of the graph (tracked ones stay)
 }
+
+// Remote branches in the graph: auto hides them when there are more than AUTO_HIDE.
+export type RemotesMode = 'auto' | 'show' | 'hide'
 
 export type Operation = 'merge' | 'cherry-pick' | 'revert' | 'rebase'
 
@@ -92,7 +97,8 @@ declare module 'claude-code' {
       result: Shaped<ActionResult | null>
       refreshing: Shaped<RefreshState | null>
       widths: Shaped<Widths>
-      spacing: Shaped<'compact' | 'normal' | 'wide'> // room between the graph's lanes, desktop
+      spacing: Shaped<'auto' | 'compact' | 'normal' | 'wide'> // room between the graph's lanes, desktop
+      remotes: Shaped<RemotesMode>
       only: Shaped<string | null> // the branch the graph is narrowed to, a full ref name
       filter: Shaped<string> // the search box's text: rows whose subject, author, hash or refs hold it
     }
