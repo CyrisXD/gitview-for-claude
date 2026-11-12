@@ -11,16 +11,16 @@ const OPEN = { command: 'gitview', origin: { kind: 'composer' } } as Parameters<
 const row = (hash: string, parents: string, refs: string, subject: string) =>
   [hash, parents, refs, 'Ada', '10 Nov 2026 14:32', subject].join('\x1f') + '\x1e\n'
 const LOG =
-  row('mmmmmmm1', 'bbbbbbb1 ccccccc1', 'HEAD -> main, origin/main', 'Merge feature') +
+  row('fffffff1', 'bbbbbbb1 ccccccc1', 'HEAD -> main, origin/main', 'Merge feature') +
   row('ccccccc1', 'aaaaaaa1', 'feature, origin/feature', 'Add feature') +
   row('bbbbbbb1', 'aaaaaaa1', 'tag: v1.0, origin/old', 'Fix bug') +
   row('aaaaaaa1', '', '', 'Initial commit')
-const CTX = { branch: 'main', headHash: 'mmmmmmm1', remotes: ['origin'], localBranches: ['main', 'feature'] }
+const CTX = { branch: 'main', headHash: 'fffffff1', remotes: ['origin'], localBranches: ['main', 'feature'] }
 
 test('groups: commit, branch, tag and remote actions with the right commands', async () => {
   const [m, c, b] = parseLog(LOG)
   const head = groupsFor(m!, CTX)
-  expect(head.map(g => g.title)).toEqual(['Commit mmmmmmm', 'Branch main (checked out)'])
+  expect(head.map(g => g.title)).toEqual(['Commit fffffff', 'Branch main (checked out)'])
   // No merging, cherry-picking or resetting the checked-out commit onto itself.
   expect(head[0]!.actions.map(a => a.id)).not.toContain('commit:merge')
   expect(head[1]!.actions.map(a => a.id)).toContain('branch:main:pull')
@@ -37,8 +37,8 @@ test('groups: commit, branch, tag and remote actions with the right commands', a
   expect(tagged[2]!.actions.map(a => a.id)).toContain('remote:origin/old:checkout')
 
   // A merge commit is cherry-picked and reverted against its first parent.
-  const other = groupsFor(m!, { ...CTX, headHash: 'xxxxxxx1', branch: 'feature' })
-  expect(other[0]!.actions.find(a => a.id === 'commit:revert')!.run!('', '')).toEqual([['revert', '--no-edit', '-m', '1', 'mmmmmmm1']])
+  const other = groupsFor(m!, { ...CTX, headHash: '77777771', branch: 'feature' })
+  expect(other[0]!.actions.find(a => a.id === 'commit:revert')!.run!('', '')).toEqual([['revert', '--no-edit', '-m', '1', 'fffffff1']])
 })
 
 test('describe quotes words that need it', async () => {
@@ -59,7 +59,7 @@ test('the pane confirms an action, runs git and shows the result', async ($, on)
   on('process.run', (_, e) => {
     const a = e.argv.join(' ')
     if (a.includes(' log ')) return ok(LOG)
-    if (a.includes('rev-parse HEAD')) return ok('mmmmmmm1\n')
+    if (a.includes('rev-parse HEAD')) return ok('fffffff1\n')
     if (a.endsWith(' remote')) return ok('origin\n')
     if (a.includes('symbolic-ref')) return ok('main\n')
     if (a.includes('for-each-ref')) return ok('refs/heads/main\nrefs/heads/feature\n')
@@ -92,7 +92,7 @@ test('the pane confirms an action, runs git and shows the result', async ($, on)
 })
 
 test('a stopped operation offers continue and abort on the uncommitted row', async () => {
-  const working = { kind: 'working' as const, hash: 'WORKING', parents: ['mmmmmmm1'], refs: [], author: '*', date: '*', subject: 'Uncommitted Changes (1)' }
+  const working = { kind: 'working' as const, hash: 'WORKING', parents: ['fffffff1'], refs: [], author: '*', date: '*', subject: 'Uncommitted Changes (1)' }
   expect(groupsFor(working, CTX)[0]!.actions.map(a => a.id)).toEqual(['working:stash', 'working:discard'])
   const acts = groupsFor(working, { ...CTX, operation: 'cherry-pick' })[0]!.actions
   expect(acts.find(a => a.id === 'working:abort')!.run!('', '')).toEqual([['cherry-pick', '--abort']])
@@ -109,7 +109,7 @@ test('while a merge is stopped, other actions point to continue or abort', async
   on('process.run', (_, e) => {
     const a = e.argv.join(' ')
     if (a.includes(' log ')) return ok(LOG)
-    if (a.includes('rev-parse HEAD')) return ok('mmmmmmm1\n')
+    if (a.includes('rev-parse HEAD')) return ok('fffffff1\n')
     if (a.endsWith(' remote')) return ok('origin\n')
     if (a.includes('symbolic-ref')) return ok('main\n')
     if (a.includes('--verify MERGE_HEAD')) return ok('ccccccc1\n')

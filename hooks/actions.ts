@@ -181,8 +181,9 @@ export function groupsFor(c: Commit, ctx: Context): Group[] {
         ],
       })
     } else if (b.kind === 'remote') {
-      const slash = b.label.indexOf('/')
-      const [rem, name] = [b.label.slice(0, slash), b.label.slice(slash + 1)]
+      // The longest remote the label starts with: a remote's own name may hold a /.
+      const rem = ctx.remotes.filter(r => b.label.startsWith(`${r}/`)).sort((x, y) => y.length - x.length)[0] ?? b.label.slice(0, b.label.indexOf('/'))
+      const name = b.label.slice(rem.length + 1)
       const hasLocal = ctx.localBranches.includes(name)
       groups.push({
         title: `Remote branch ${b.label}`,

@@ -49,6 +49,8 @@ let onlyRef: string | null = null // the branch the history is narrowed to, a fu
 let adopted = false // whether a draw has handed the mirrors $.state's values yet
 let last = '' // the last git output written, so an unchanged poll does not redraw
 let lastRefs = '' // the same without the working tree's status
+let shownStatus: GraphData['status'] = 'loading' // what the last read found: a repository or not
+let stoppedOp: GraphData['operation'] = null // a merge, rebase, cherry-pick or revert waiting on conflicts
 
 // A row matches when every word of the search is in its subject, author, hash or refs (any case).
 export const matches = (c: Commit, q: string) => {
@@ -202,6 +204,8 @@ async function load($: EngineInterface, force: boolean) {
   if (!force && !changed) return changed
   last = raw
   lastRefs = refs
+  shownStatus = next.status
+  stoppedOp = next.operation ?? null
   commits = next.commits
   await update($, data, () => next)
   // The open commit's file list can change too (uncommitted changes above all).
@@ -273,6 +277,11 @@ async function runAction($: EngineInterface, action: Action) {
   const p = pendingNow
   if (!p || p.id !== action.id || !action.run || p.status === 'running') return
   const value = p.value.trim()
+  // The confirm step hides Run then, but Enter in a name field calls this directly.
+  if (stoppedOp && !action.id.startsWith('working:')) {
+    await setPending($, { ...p, status: 'error', message: `The ${stoppedOp} stopped. Continue or abort it from Uncommitted Changes first.` })
+    return
+  }
   if (action.input && !action.input.isOptional && !value) {
     await setPending($, { ...p, status: 'error', message: `${action.input.label} is required.` })
     return
@@ -433,9 +442,12 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'gitview', description: 'Show the repository’s branch and commit graph in a pane' })
     startSurface = e.surface
-    if (e.surface === 'vscode') return next(e)
-    void $.ui.open({ id: PANE, title: TITLE })
+    // Scripts (claude -p) get /gitview but no pane or reads of their own.
+    if (e.surface === 'vscode' || !e.isInteractive) return next(e)
+    // The pane opens on its own only in a repository; elsewhere /gitview still opens it.
     void refresh($, true)
+      .then(() => (shownStatus === 'not-repo' ? undefined : $.ui.open({ id: PANE, title: TITLE })))
+      .catch(() => {})
     poll?.cancel()
     poll = $.clock.every(POLL_MS, () => void check($).catch(() => {}))
     return next(e)

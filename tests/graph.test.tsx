@@ -13,11 +13,11 @@ const row = (hash: string, parents: string, refs: string, subject: string) =>
 
 // main: A - B - M (merge of feature C); feature: A - C
 const LOG =
-  row('mmmmmmm1', 'bbbbbbb1 ccccccc1', 'HEAD -> main, origin/main, origin/HEAD', 'Merge feature') +
+  row('fffffff1', 'bbbbbbb1 ccccccc1', 'HEAD -> main, origin/main, origin/HEAD', 'Merge feature') +
   row('ccccccc1', 'aaaaaaa1', 'origin/feature', 'Add feature') +
   row('bbbbbbb1', 'aaaaaaa1', 'tag: v1.0', 'Fix bug') +
   row('aaaaaaa1', '', '', 'Initial commit')
-const STASH = row('sssssss1', 'bbbbbbb1 iiiiiii1', 'stash@{0}', 'On main: wip')
+const STASH = row('eeeeeee1', 'bbbbbbb1 99999991', 'stash@{0}', 'On main: wip')
 
 test('lanes: a branch splits off a merge and converges at its base', async () => {
   const commits = parseLog(LOG)
@@ -29,9 +29,9 @@ test('lanes: a branch splits off a merge and converges at its base', async () =>
 })
 
 test('stashes sit above their base and uncommitted changes on top', async () => {
-  const working = { kind: 'working' as const, hash: 'WORKING', parents: ['mmmmmmm1'], refs: [], author: '*', date: '*', subject: 'Uncommitted Changes (1)' }
+  const working = { kind: 'working' as const, hash: 'WORKING', parents: ['fffffff1'], refs: [], author: '*', date: '*', subject: 'Uncommitted Changes (1)' }
   const all = merge(parseLog(LOG), parseLog(STASH, 'stash'), working)
-  expect(all.map(c => c.hash)).toEqual(['WORKING', 'mmmmmmm1', 'ccccccc1', 'sssssss1', 'bbbbbbb1', 'aaaaaaa1'])
+  expect(all.map(c => c.hash)).toEqual(['WORKING', 'fffffff1', 'ccccccc1', 'eeeeeee1', 'bbbbbbb1', 'aaaaaaa1'])
   expect(all[3]!.parents).toEqual(['bbbbbbb1']) // index commit dropped
   const lay = layout(all)
   // Each row's slice: a line arriving at row 1 from the working row above.
@@ -69,7 +69,7 @@ function fakeGit(on: On, log: () => string) {
     if (a.includes('%(objectname)')) return ok(log()) // the poll's fingerprint moves with the history
     if (a.includes('stash list')) return ok(STASH)
     if (a.includes('status --porcelain')) return ok(' M src/app.ts\n')
-    if (a.includes('rev-parse HEAD')) return ok('mmmmmmm1\n')
+    if (a.includes('rev-parse HEAD')) return ok('fffffff1\n')
     if (a.endsWith(' remote')) return ok('origin\n')
     if (a.includes('--name-status')) return ok('M\0src/app.ts\0')
     if (a.includes('--numstat')) return ok('4\t1\tsrc/app.ts\0')
@@ -97,18 +97,18 @@ test('rows, details and a diff on desktop; polling picks up new commits', async 
   expect(await ui.find({ type: 'Text', text: /Uncommitted Changes \(1\)/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /On main: wip/ })).toBeDefined()
 
-  await ui.press({ key: 'c:mmmmmmm1' })
+  await ui.press({ key: 'c:fffffff1' })
   expect(await ui.find({ type: 'Text', text: /Long body/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /1 file changed/ })).toBeDefined()
 
   await ui.press({ key: 'f:src/app.ts' })
   expect(await ui.find({ type: 'Code' })).toBeDefined()
 
-  await ui.press({ key: 'c:mmmmmmm1' }) // collapses
+  await ui.press({ key: 'c:fffffff1' }) // collapses
   expect(await ui.find({ type: 'Text', text: /Long body/ })).toBeUndefined()
   await ui.unmount()
 
-  log = row('ddddddd1', 'mmmmmmm1', 'HEAD -> main', 'New work') + LOG.replace('HEAD -> main, ', '')
+  log = row('ddddddd1', 'fffffff1', 'HEAD -> main', 'New work') + LOG.replace('HEAD -> main, ', '')
   await clock.advance(10_000)
   const later = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await later.find({ type: 'Text', text: /Rows 1–7 of 7/ })).toBeDefined()

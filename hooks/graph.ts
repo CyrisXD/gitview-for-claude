@@ -5,23 +5,36 @@ export const FORMAT = '--format=%H%x1f%P%x1f%D%x1f%an%x1f%ad%x1f%s%x1e'
 export const DATE = '--date=format:%d %b %Y %H:%M'
 export const WORKING = 'WORKING'
 
+const HEX = /^[0-9a-f]{4,64}$/
+const DATED = /^\d\d \w{3} \d{4} \d\d:\d\d$/ // what DATE prints
+
+// A commit's author and subject may hold \x1f or \x1e themselves, and a subject holding \x1e reads as
+// the start of another record: one with any hash it likes (`--hard`), which an action would hand to git.
+// So a record counts only when its hash and parents are hex, and its author and subject are what lies
+// either side of the date. A forged record's text stays in the subject before it, where it belongs.
 export function parseLog(out: string, kind: CommitKind = 'commit'): Commit[] {
-  return out
-    .split('\x1e')
-    .map(s => s.replace(/^\n+/, ''))
-    .filter(Boolean)
-    .map(line => {
-      const [hash = '', parents = '', refs = '', author = '', date = '', subject = ''] = line.split('\x1f')
-      return {
-        kind,
-        hash,
-        parents: parents.split(' ').filter(Boolean),
-        refs: refs.split(', ').filter(Boolean),
-        author,
-        date,
-        subject,
-      }
+  const commits: Commit[] = []
+  for (const rec of out.split('\x1e')) {
+    const f = rec.replace(/^\n+/, '').split('\x1f')
+    const at = f.findIndex((x, i) => i > 3 && DATED.test(x))
+    const parents = (f[1] ?? '').split(' ').filter(Boolean)
+    const ok = f.length >= 6 && HEX.test(f[0]!) && parents.every(p => HEX.test(p)) && at > 3
+    const last = commits.at(-1)
+    if (!ok) {
+      if (last && rec) last.subject += `\x1e${rec}`.replace(/[\x1e\x1f]/g, ' ').replace(/\s+$/, '')
+      continue
+    }
+    commits.push({
+      kind,
+      hash: f[0]!,
+      parents,
+      refs: f[2]!.split(', ').filter(Boolean),
+      author: f.slice(3, at).join(' '),
+      date: f[at]!,
+      subject: f.slice(at + 1).join(' '),
     })
+  }
+  return commits
 }
 
 // Puts each stash directly above its base commit, and the uncommitted

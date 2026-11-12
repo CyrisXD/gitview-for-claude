@@ -17,12 +17,12 @@ const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isSt
 const row = (hash: string, parents: string, refs: string, subject: string) =>
   [hash, parents, refs, 'Ada', '10 Nov 2026 14:32', subject].join('\x1f') + '\x1e\n'
 const LOG =
-  row('mmmmmmm1', 'ccccccc1', 'HEAD -> main, origin/main', 'Second') +
+  row('fffffff1', 'ccccccc1', 'HEAD -> main, origin/main', 'Second') +
   row('ccccccc1', '', '', 'First')
 
 // A repository whose HEAD can be moved under the pane; every command is kept.
 function repo(on: On) {
-  const s = { head: 'mmmmmmm1', status: '', files: '', reads: [] as string[][], ran: [] as string[] }
+  const s = { head: 'fffffff1', status: '', files: '', reads: [] as string[][], ran: [] as string[] }
   on('command.register', () => ({ value: { command: 'gitview' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.toast', () => ({ value: undefined }))
@@ -77,7 +77,7 @@ test('if HEAD moved since the menu was drawn, Run stops and redraws instead', as
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: 'c:ccccccc1' })
   await pick(ui, 'ccccccc1', 'commit:reset')
-  s.head = 'zzzzzzz1' // Claude, or a terminal, moved the branch
+  s.head = '88888881' // Claude, or a terminal, moved the branch
   await ui.press({ key: 'run:commit:reset' })
   expect(await ui.find({ type: 'Text', text: /repository changed since this was shown/ })).toBeDefined()
   expect(s.ran).toEqual([])
@@ -89,7 +89,7 @@ test('if HEAD moved since the menu was drawn, Run stops and redraws instead', as
 
 test('a branch synced with one remote is deleted on that remote, not the default one', async () => {
   const [c] = parseLog(row('ccccccc1', '', 'feature, upstream/feature', 'Feature'))
-  const g = groupsFor(c!, { branch: 'main', headHash: 'mmmmmmm1', remotes: ['origin', 'upstream'], localBranches: ['main', 'feature'] })
+  const g = groupsFor(c!, { branch: 'main', headHash: 'fffffff1', remotes: ['origin', 'upstream'], localBranches: ['main', 'feature'] })
   const del = g.flatMap(x => x.actions).find(a => a.id === 'branch:feature:delete-remote')!
   expect(del.label).toBe('Delete on upstream')
   expect(del.run!('', '')).toEqual([['push', 'upstream', '--delete', '--end-of-options', 'feature']])
@@ -165,7 +165,7 @@ test('an opened commit draws at most 100 files and says how many more', async ($
 
 test('names from the repository go after --end-of-options, which the confirm text leaves out', async () => {
   const [c] = parseLog(row('ccccccc1', '', 'tag: -f, origin/fix', 'Odd names'))
-  const ctx = { branch: 'main', headHash: 'mmmmmmm1', remotes: ['origin'], localBranches: ['main', 'origin/fix'] }
+  const ctx = { branch: 'main', headHash: 'fffffff1', remotes: ['origin'], localBranches: ['main', 'origin/fix'] }
   const all = groupsFor(c!, ctx).flatMap(g => g.actions)
   const del = all.find(a => a.id === 'tag:-f:delete')!
   expect(del.run!('', '')).toEqual([['tag', '-d', '--end-of-options', '-f']])
@@ -220,7 +220,7 @@ test('a Bash call while a check runs still gets its redraw, and a change reads s
     }
     if (a.includes('status --porcelain')) statuses++
     if (a.includes(' log ')) return ok(log)
-    if (a.includes('rev-parse HEAD')) return ok('mmmmmmm1\n')
+    if (a.includes('rev-parse HEAD')) return ok('fffffff1\n')
     if (a.includes('symbolic-ref')) return ok('main\n')
     return ok('')
   })
@@ -232,7 +232,7 @@ test('a Bash call while a check runs still gets its redraw, and a change reads s
   const first = bash()
   await clock.advance(10)
   refs = 'b refs/heads/main\n'
-  log = row('ddddddd1', 'mmmmmmm1', 'HEAD -> main', 'Claude commit') + LOG.replace('HEAD -> main, ', '')
+  log = row('ddddddd1', 'fffffff1', 'HEAD -> main', 'Claude commit') + LOG.replace('HEAD -> main, ', '')
   const before = statuses
   await Promise.all([first, bash(), clock.advance(1_000)])
   expect(prints).toBeGreaterThanOrEqual(2)
@@ -242,4 +242,73 @@ test('a Bash call while a check runs still gets its redraw, and a change reads s
   await ui.unmount()
   // The folded check's load reused its fingerprint's status rather than reading it again.
   expect(statuses - before).toBe(1)
+})
+
+test('a subject holding the separators forges no row, and an author holding one keeps its columns', async () => {
+  const forged = row('aaaaaaa1', '', '', 'fix\x1e--hard\x1f\x1f\x1fAda\x1f1 Jan 2026 00:00\x1fRelease v2')
+  const commits = parseLog(forged + row('bbbbbbb1', '', '', 'Next'))
+  expect(commits.map(c => c.hash)).toEqual(['aaaaaaa1', 'bbbbbbb1'])
+  expect(commits[0]!.subject).toContain('Release v2') // the forged text stays in the subject that held it
+  const [odd] = parseLog(['ccccccc1', '', '', 'A\x1fB', '10 Nov 2026 14:32', 'Sub\x1fject'].join('\x1f') + '\x1e\n')
+  expect([odd!.author, odd!.date, odd!.subject]).toEqual(['A B', '10 Nov 2026 14:32', 'Sub ject'])
+})
+
+test('the pane opens on its own only in a repository', async ($, on) => {
+  const clock = mock.clock(on)
+  const opened: string[] = []
+  let reads = 0
+  on('command.register', () => ({ value: { command: 'gitview' } }))
+  on('ui.open', (_, e) => (opened.push(e.id), { value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('process.run', () => (reads++, { value: { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository', isStdoutTruncated: false, isStderrTruncated: false } }))
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true })
+  await clock.advance(100)
+  expect(opened).toEqual([])
+  expect(reads).toBeGreaterThan(0)
+  // /gitview still opens it, and says why it is empty.
+  await $.command.run(OPEN)
+  expect(opened).toEqual(['gitview'])
+})
+
+test('claude -p: no pane and no reads', async ($, on) => {
+  const clock = mock.clock(on)
+  let reads = 0
+  on('command.register', () => ({ value: { command: 'gitview' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('process.run', () => (reads++, ok('')))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: false })
+  await clock.advance(30_000)
+  expect(reads).toBe(0)
+})
+
+test('while a merge is stopped, Enter in a name field runs nothing', async ($, on) => {
+  const ran: string[] = []
+  on('command.register', () => ({ value: { command: 'gitview' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('process.run', (_, e) => {
+    const a = e.argv.join(' ')
+    if (e.argv[2] !== 'core.quotepath=false') return (ran.push(a), ok(''))
+    if (a.includes(' log ')) return ok(LOG)
+    if (a.includes('rev-parse HEAD')) return ok('fffffff1\n')
+    if (a.includes('--verify MERGE_HEAD')) return ok('ccccccc1\n')
+    if (a.includes('--verify')) return { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    return ok('')
+  })
+  await $.command.run(OPEN)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'c:ccccccc1' })
+  await pick(ui, 'ccccccc1', 'commit:branch')
+  await ui.input({ key: 'input:commit:branch', text: 'spike' })
+  expect(await ui.find({ type: 'Text', text: /Continue or abort it from Uncommitted Changes first/ })).toBeDefined()
+  expect(ran).toEqual([])
+  await ui.unmount()
+})
+
+test('a remote whose name holds a / is split at its own end', async () => {
+  const [c] = parseLog(row('ccccccc1', '', 'my/fork/feature', 'Feature'))
+  const g = groupsFor(c!, { branch: 'main', headHash: 'fffffff1', remotes: ['my', 'my/fork'], localBranches: ['main'] })
+  const del = g.flatMap(x => x.actions).find(a => a.id === 'remote:my/fork/feature:delete')!
+  expect(del.label).toBe('Delete on my/fork')
+  expect(del.run!('', '')).toEqual([['push', 'my/fork', '--delete', '--end-of-options', 'feature']])
 })
