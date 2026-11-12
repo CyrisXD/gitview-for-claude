@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderInput } from 'claude-code'
 
 import type { ActionResult, Commit, Details, FileChange, FileDiff, GraphData, Pending, RefreshState, View, Widths } from '../types'
-import { describe, groupsFor } from './actions'
+import { STAGE_LISTED, describe, groupsFor, visible } from './actions'
 import { DESC_MIN, MIN } from './columns'
 import type { Action } from './actions'
 import { emptyDetails, fingerprint, loadDetails, loadDiff, loadGraph } from './git'
@@ -50,6 +50,7 @@ let adopted = false // whether a draw has handed the mirrors $.state's values ye
 let last = '' // the last git output written, so an unchanged poll does not redraw
 let lastRefs = '' // the same without the working tree's status
 let shownStatus: GraphData['status'] = 'loading' // what the last read found: a repository or not
+let statusError: string | undefined // git status failed on the last read
 let stoppedOp: GraphData['operation'] = null // a merge, rebase, cherry-pick or revert waiting on conflicts
 
 // A row matches when every word of the search is in its subject, author, hash or refs (any case).
@@ -73,7 +74,10 @@ const keyOf = (v: unknown): string => {
 // handed back while they read the same: comparing them costs far less than drawing.
 let kept: { key: string; tree: unknown } | null = null
 
-const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
+const clip = (raw: string, n: number) => {
+  const s = visible(raw)
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s
+}
 // git's long answers (a stash apply prints the whole status) cut to their first lines.
 export const lines = (s: string, n: number) => {
   const all = s.split('\n')
@@ -94,8 +98,20 @@ const runner =
     }
     // GIT_OPTIONAL_LOCKS=0: a background status must not take index.lock, or a git command
     // Claude or the person runs at that moment fails with "index.lock exists".
-    return $.process.run(argv, { timeoutMs: 20_000, env: { GIT_OPTIONAL_LOCKS: '0' } })
+    // A read that times out or cannot start is a failed read, not a missing answer.
+    return runGit($, argv, { timeoutMs: 20_000, env: { GIT_OPTIONAL_LOCKS: '0' } }).catch(err => ({ exitCode: -1, stdout: '', stderr: String(err) }))
   }
+
+// On Windows a bare `git` is looked for in the child's working folder before PATH, so a cloned
+// repository holding a git.exe would run it. There git starts in the system folder and -C points
+// it at the repository; argv[0] stays `git`.
+let place: { cwd?: string; pre: string[] } = { pre: [] }
+async function placeGit($: EngineInterface, repo: string) {
+  const isWindows = (await $.env.get('OS')) === 'Windows_NT'
+  place = isWindows ? { cwd: (await $.env.get('SystemRoot')) ?? 'C:\\Windows', pre: ['-C', repo] } : { pre: [] }
+}
+const runGit = ($: EngineInterface, argv: string[], init: { timeoutMs: number; env: Record<string, string>; stdin?: string }) =>
+  $.process.run([argv[0]!, ...place.pre, ...argv.slice(1)], place.cwd ? { ...init, cwd: place.cwd } : init)
 
 async function setView($: EngineInterface, next: View) {
   current = next
@@ -185,10 +201,12 @@ async function load($: EngineInterface, force: boolean) {
     }
     raw = g.raw
     refs = g.refs
-    const { raw: _raw, refs: _refs, ...rest } = g
+    statusError = g.statusError
+    const { raw: _raw, refs: _refs, statusError: _statusError, ...rest } = g
     next = rest
   } catch (err) {
     raw = refs = String(err)
+    statusError = String(err)
     next = {
       status: 'error',
       message: `Could not run git: ${String(err)}`,
@@ -247,8 +265,6 @@ async function openDetails($: EngineInterface, hash: string) {
 }
 
 
-// Network commands (push, pull) may wait on a server; none may prompt.
-const NETWORK = new Set(['push', 'pull', 'fetch'])
 
 let pendingNow: Pending | null = null
 
@@ -303,15 +319,27 @@ async function runAction($: EngineInterface, action: Action) {
     await setPending($, { ...p, status: 'error', message: 'The repository changed since this was shown. Check the action above and run it again.' })
     return
   }
+  // Without a working tree status the check above compares nothing, and a hard reset or discard
+  // could throw away edits nobody was shown.
+  if (withStatus && statusError) {
+    await setPending($, { ...p, status: 'error', message: `git status failed, so the working tree is unknown: ${lines(statusError, 3)}` })
+    return
+  }
   const out: string[] = []
+  let prev = ''
   for (const argv of action.run(value, p.choice)) {
-    const network = NETWORK.has(argv[0] ?? '')
-    const r = await $.process
-      .run(['git', ...argv], {
-        timeoutMs: network ? 120_000 : 30_000,
-        env: { GIT_TERMINAL_PROMPT: '0', GIT_EDITOR: 'true' },
-      })
-      .catch(err => ({ exitCode: 1, stdout: '', stderr: String(err) }))
+    // The engine's limit: a rebase, checkout or push on a big repository can take minutes, and
+    // git killed midway leaves index.lock or a half-done operation behind.
+    const r = await runGit($, ['git', ...argv], {
+      timeoutMs: 600_000,
+      env: { GIT_TERMINAL_PROMPT: '0', GIT_EDITOR: 'true' },
+      ...(argv === STAGE_LISTED ? { stdin: prev } : {}),
+    }).catch(err => ({
+      exitCode: -1,
+      stdout: '',
+      stderr: `git ${argv[0]} did not finish (${String(err)}). Run git status in a terminal before going on: a stopped git can leave .git/index.lock or a half-done operation behind.`,
+    }))
+    prev = r.stdout
     out.push(r.stdout.trim(), r.stderr.trim())
     if (r.exitCode !== 0) {
       const text = lines(r.stderr.trim() || r.stdout.trim() || `git ${argv[0]} failed`, 8)
@@ -442,6 +470,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'gitview', description: 'Show the repository’s branch and commit graph in a pane' })
     startSurface = e.surface
+    await placeGit($, e.cwd)
     // Scripts (claude -p) get /gitview but no pane or reads of their own.
     if (e.surface === 'vscode' || !e.isInteractive) return next(e)
     // The pane opens on its own only in a repository; elsewhere /gitview still opens it.
@@ -661,7 +690,7 @@ async function drawPane($: EngineInterface, e: RenderInput) {
         <Box flexShrink={1} minWidth={Math.min(12, c.subject.length)} overflow="hidden" height={e.surface === 'terminal' ? 1 : undefined}>
           <Button key={`c:${c.hash}`} plain onPress={() => void selectCommit($, c.hash)}>
             <Text bold={isHeadCommit(c) || undefined} italic={c.kind !== 'commit' || undefined} dimColor={c.kind === 'stash' || undefined} wrap="truncate">
-              {c.subject}
+              {visible(c.subject)}
             </Text>
           </Button>
         </Box>

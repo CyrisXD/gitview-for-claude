@@ -86,6 +86,7 @@ test('rows, details and a diff on desktop; polling picks up new commits', async 
   on('command.register', () => ({ value: { command: 'gitview' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('env.get', () => ({ value: undefined }))
   on('ui.panes', () => ({ value: [{ id: 'gitview', title: 'Gitview', isShown: true, isFocused: false, isPlaced: true }] }))
   fakeGit(on, () => log)
 
@@ -124,6 +125,7 @@ test('VS Code: the pane never opens, and a pane shown there is only a note', asy
     return { value: { isPlaced: true } }
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('env.get', () => ({ value: undefined }))
   fakeGit(on, () => LOG)
 
   await $.session.start({ cwd: '/repo', surface: 'vscode', isInteractive: true })

@@ -4,6 +4,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { describe, groupsFor } from '../hooks/actions'
+import { WORKING } from '../hooks/graph'
 import { badges } from '../hooks/graph'
 import { parseLog } from '../hooks/graph'
 
@@ -22,7 +23,13 @@ const LOG =
 
 // A repository whose HEAD can be moved under the pane; every command is kept.
 function repo(on: On) {
-  const s = { head: 'fffffff1', status: '', files: '', reads: [] as string[][], ran: [] as string[] }
+  const s = {
+    head: 'fffffff1', status: '', files: '', reads: [] as string[][], ran: [] as string[],
+    op: false, // a merge stopped on a conflict
+    statusFails: false,
+    inits: [] as { timeoutMs?: number; stdin?: string }[], // what each action command was started with
+    act: (_argv: readonly string[]): Promise<ReturnType<typeof ok>> | ReturnType<typeof ok> => ok(''),
+  }
   on('command.register', () => ({ value: { command: 'gitview' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.toast', () => ({ value: undefined }))
@@ -30,8 +37,12 @@ function repo(on: On) {
     const a = e.argv.join(' ')
     if (e.argv[2] !== 'core.quotepath=false') {
       s.ran.push(a)
-      return ok('')
+      s.inits.push({ timeoutMs: e.init?.timeoutMs, stdin: e.init?.stdin })
+      return s.act(e.argv)
     }
+    if (a.includes('--verify MERGE_HEAD') && s.op) return ok('aaaaaaa1\n')
+    if (a.includes('status --porcelain') && s.statusFails)
+      return { value: { exitCode: 128, stdout: '', stderr: 'fatal: index file corrupt', isStdoutTruncated: false, isStderrTruncated: false } }
     s.reads.push([...e.argv])
     if (a.includes(' log ')) return ok(LOG)
     if (a.includes('rev-parse HEAD')) return ok(`${s.head}\n`)
@@ -105,6 +116,7 @@ test('background reads: never two at once, none while the pane is closed, no ind
   on('command.register', () => ({ value: { command: 'gitview' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('env.get', () => ({ value: undefined }))
   on('ui.panes', () => ({ value: isUp ? [{ id: 'gitview', title: 'Gitview', isShown: true, isFocused: false, isPlaced: true }] : [] }))
   on('tool.call', () => ({ result: { stdout: '', stderr: '', interrupted: false }, text: '' })) // the engine's Bash, answered here
   let prints = 0
@@ -182,6 +194,7 @@ test('the poll reads the full history only when the fingerprint moves', async ($
   on('command.register', () => ({ value: { command: 'gitview' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('env.get', () => ({ value: undefined }))
   on('ui.panes', () => ({ value: [{ id: 'gitview', title: 'Gitview', isShown: true, isFocused: false, isPlaced: true }] }))
   on('process.run', (_, e) => {
     const a = e.argv.join(' ')
@@ -208,6 +221,7 @@ test('a Bash call while a check runs still gets its redraw, and a change reads s
   on('command.register', () => ({ value: { command: 'gitview' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('env.get', () => ({ value: undefined }))
   on('ui.panes', () => ({ value: [{ id: 'gitview', title: 'Gitview', isShown: true, isFocused: false, isPlaced: true }] }))
   on('tool.call', () => ({ result: { stdout: '', stderr: '', interrupted: false }, text: '' })) // the engine's Bash, answered here
   on('process.run', async (_, e) => {
@@ -260,6 +274,7 @@ test('the pane opens on its own only in a repository', async ($, on) => {
   on('command.register', () => ({ value: { command: 'gitview' } }))
   on('ui.open', (_, e) => (opened.push(e.id), { value: { isPlaced: true } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('env.get', () => ({ value: undefined }))
   on('process.run', () => (reads++, { value: { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository', isStdoutTruncated: false, isStderrTruncated: false } }))
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true })
   await clock.advance(100)
@@ -276,6 +291,7 @@ test('claude -p: no pane and no reads', async ($, on) => {
   on('command.register', () => ({ value: { command: 'gitview' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('env.get', () => ({ value: undefined }))
   on('process.run', () => (reads++, ok('')))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: false })
   await clock.advance(30_000)
@@ -311,4 +327,84 @@ test('a remote whose name holds a / is split at its own end', async () => {
   const del = g.flatMap(x => x.actions).find(a => a.id === 'remote:my/fork/feature:delete')!
   expect(del.label).toBe('Delete on my/fork')
   expect(del.run!('', '')).toEqual([['push', 'my/fork', '--delete', '--end-of-options', 'feature']])
+})
+
+test('continue stages only the conflicted files, piped from the list git gives', async ($, on) => {
+  const s = repo(on)
+  s.op = true
+  s.status = 'UU src/app.ts\n M notes.md\n'
+  s.act = argv => ok(argv.includes('--diff-filter=U') ? 'src/app.ts\0' : '')
+  await $.command.run(OPEN)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: `c:${WORKING}` })
+  await pick(ui, WORKING, 'working:continue')
+  expect(await ui.find({ type: 'Text', text: /diff --name-only -z --diff-filter=U \| git add --pathspec-from-file=-/ })).toBeDefined()
+  await ui.press({ key: 'run:working:continue' })
+  expect(s.ran.slice(1)).toEqual([
+    'git diff --name-only -z --diff-filter=U',
+    'git add --pathspec-from-file=- --pathspec-file-nul',
+    'git merge --continue',
+  ])
+  expect(s.inits[2]!.stdin).toBe('src/app.ts\0')
+  expect(s.ran.some(a => a.includes('add -u'))).toBe(false)
+  await ui.unmount()
+})
+
+test('a failed git status shows the uncommitted row as unknown and blocks its actions', async ($, on) => {
+  const s = repo(on)
+  s.statusFails = true
+  await $.command.run(OPEN)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Uncommitted Changes \(unknown: git status failed\)/ })).toBeDefined()
+  await ui.press({ key: `c:${WORKING}` })
+  await pick(ui, WORKING, 'working:discard')
+  await ui.press({ key: 'run:working:discard' })
+  expect(await ui.find({ type: 'Text', text: /git status failed, so the working tree is unknown/ })).toBeDefined()
+  expect(s.ran).toEqual([])
+  await ui.unmount()
+})
+
+test('actions get the engine’s longest timeout, and one that does not finish says how to check', async ($, on) => {
+  const s = repo(on)
+  s.act = () => Promise.reject(new Error('timed out after 600000 ms'))
+  await $.command.run(OPEN)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'c:ccccccc1' })
+  await pick(ui, 'ccccccc1', 'commit:checkout')
+  await ui.press({ key: 'run:commit:checkout' })
+  expect(s.inits[0]!.timeoutMs).toBe(600_000)
+  expect(await ui.find({ type: 'Text', text: /did not finish[\s\S]*index\.lock/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('bidi and zero-width characters in names are shown escaped, and run as they are', async () => {
+  const name = 'safe\u202Elive.sh'
+  const [c] = parseLog(row('ccccccc1', '', `tag: ${name}`, 'Odd'))
+  const ctx = { branch: 'main', headHash: 'fffffff1', remotes: ['origin'], localBranches: ['main'] }
+  const groups = groupsFor(c!, ctx)
+  const tag = groups.find(g => g.title.startsWith('Tag '))!
+  expect(tag.title).toBe('Tag safe<U+202E>live.sh')
+  const del = tag.actions.find(a => a.id.endsWith(':delete'))!
+  expect(del.run!('', '')).toEqual([['tag', '-d', '--end-of-options', name]])
+  expect(describe(del.run!('', ''))).toBe("git tag -d 'safe<U+202E>live.sh'")
+})
+
+// Last: on Windows the module keeps git's placement for later reads.
+test('on Windows git starts in the system folder and is pointed at the repository', async ($, on) => {
+  const seen: { argv: string[]; cwd?: string }[] = []
+  let windows = true
+  on('command.register', () => ({ value: { command: 'gitview' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('env.get', (_, e) => ({ value: !windows ? undefined : e.name === 'OS' ? 'Windows_NT' : e.name === 'SystemRoot' ? 'C:\\Windows' : undefined }))
+  on('process.run', (_, e) => (seen.push({ argv: [...e.argv], cwd: e.init?.cwd }), ok('')))
+  await $.session.start({ cwd: 'D:\\src\\cloned', surface: 'desktop', isInteractive: true })
+  await $.command.run(OPEN)
+  expect(seen.length).toBeGreaterThan(0)
+  for (const r of seen) {
+    expect(r.argv.slice(0, 3)).toEqual(['git', '-C', 'D:\\src\\cloned'])
+    expect(r.cwd).toBe('C:\\Windows')
+  }
+  windows = false
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
 })

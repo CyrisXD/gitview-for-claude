@@ -39,11 +39,17 @@ export function replay(on: any, fx: Fixture, slow?: { clock: { sleep(ms: number)
       log.missing.push(`state ${log.state}: ${e.argv.join(' ')}`)
       return value({ exitCode: 128, stdout: '', stderr: 'not recorded' })
     }
-    log.ran.push(e.argv.filter(a => a !== '--end-of-options').join(' '))
+    // Recordings made when Continue staged with `add -u`: listing the conflicted files is new, and
+    // staging them stands in for the recorded `add -u`.
+    if (key === JSON.stringify(['git', 'diff', '--name-only', '-z', '--diff-filter=U'])) return value({ exitCode: 0, stdout: '', stderr: '' })
+    const isListedAdd = key === JSON.stringify(['git', 'add', '--pathspec-from-file=-', '--pathspec-file-nul'])
+    log.ran.push(isListedAdd ? 'git add -u' : e.argv.filter(a => a !== '--end-of-options').join(' '))
     const st = fx.steps[log.step]
     const want = st?.argv[log.cmd]
     // Recordings made before ref names got --end-of-options have their commands without it.
-    if (!st || !want || (JSON.stringify(want) !== key && JSON.stringify(want) !== JSON.stringify(e.argv.filter(a => a !== '--end-of-options')))) {
+    const same = (w: readonly string[]) =>
+      JSON.stringify(w) === key || JSON.stringify(w) === JSON.stringify(e.argv.filter(a => a !== '--end-of-options')) || (isListedAdd && JSON.stringify(w) === '["git","add","-u"]')
+    if (!st || !want || !same(want)) {
       log.unexpected.push(e.argv.join(' '))
       return value({ exitCode: 1, stdout: '', stderr: 'unexpected command' })
     }

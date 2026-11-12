@@ -37,6 +37,14 @@ const STAGED = {
 // Before a name read from the repository: a tag may be called -f, which git would take as an option.
 const EOO = '--end-of-options'
 const NO_WHITESPACE = '-blank-at-eol,-blank-at-eof,-space-before-tab'
+const UNMERGED = ['diff', '--name-only', '-z', '--diff-filter=U']
+// Reads its paths from the command before it (runAction pipes them in).
+export const STAGE_LISTED = ['add', '--pathspec-from-file=-', '--pathspec-file-nul']
+
+// Bidi overrides, zero-width and control characters, shown as <U+202E>: git allows them in names,
+// and a name drawn reversed or with a hidden part would not read as what runs.
+export const visible = (s: string) =>
+  s.replace(/[\0-\x1f\x7f-\x9f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g, ch => `<U+${ch.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}>`)
 
 export function groupsFor(c: Commit, ctx: Context): Group[] {
   const current = ctx.branch ?? 'HEAD'
@@ -53,9 +61,15 @@ export function groupsFor(c: Commit, ctx: Context): Group[] {
               {
                 id: 'working:continue',
                 label: `Continue ${ctx.operation}`,
-                // `add -u` would stage a file with its conflict markers still in it; diff --check stops
-                // on those (whitespace checks off, so only markers count) before anything is staged.
-                run: () => [['-c', `core.whitespace=${NO_WHITESPACE}`, 'diff', '--check', 'HEAD'], ['add', '-u'], [ctx.operation!, '--continue']],
+                // diff --check stops on conflict markers left in (whitespace checks off, so only markers
+                // count) before anything is staged. Then only the conflicted files are staged: other
+                // edits in the working tree stay out of the commit.
+                run: () => [
+                  ['-c', `core.whitespace=${NO_WHITESPACE}`, 'diff', '--check', 'HEAD'],
+                  UNMERGED,
+                  STAGE_LISTED,
+                  [ctx.operation!, '--continue'],
+                ],
               },
               { id: 'working:abort', label: `Abort ${ctx.operation}`, isDanger: true, run: () => [[ctx.operation!, '--abort']] },
             ]
@@ -251,10 +265,16 @@ export function groupsFor(c: Commit, ctx: Context): Group[] {
       })
     }
   }
-  return groups
+  // Titles and labels are only drawn; ids, copies and commands keep the names as they are.
+  return groups.map(g => ({ ...g, title: visible(g.title), actions: g.actions.map(a => ({ ...a, label: visible(a.label) })) }))
 }
 
 // The command line a confirm step shows, quoted where a word needs it.
 // --end-of-options is left out: it changes nothing a reader needs to see.
 export const describe = (cmds: string[][]) =>
-  cmds.map(argv => ['git', ...argv.filter(w => w !== EOO)].map(w => (/^[\w./@{}:=-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`)).join(' ')).join(' && ')
+  cmds
+    .map((argv, i) => {
+      const line = ['git', ...argv.filter(w => w !== EOO)].map(w => (/^[\w./@{}:=-]+$/.test(w) ? w : `'${visible(w).replace(/'/g, `'\\''`)}'`)).join(' ')
+      return i === 0 ? line : `${argv === STAGE_LISTED ? '|' : '&&'} ${line}`
+    })
+    .join(' ')

@@ -11,7 +11,8 @@ const git = (...args: string[]) => ['git', '-c', 'core.quotepath=false', '-c', '
 const SAFE_DIFF = ['--no-ext-diff', '--no-textconv']
 
 // raw decides a redraw; refs is the same without the working tree's status.
-export type Graph = GraphData & { raw: string; refs: string }
+// statusError: git status failed, so what the working tree holds is not known.
+export type Graph = GraphData & { raw: string; refs: string; statusError?: string }
 
 const OPERATIONS: [Operation, string][] = [
   ['merge', 'MERGE_HEAD'],
@@ -53,14 +54,15 @@ export async function loadGraph(run: Run, limit: number, only: string | null = n
   const ops = await Promise.all(OPERATIONS.map(([, ref]) => run(git('rev-parse', '-q', '--verify', ref))))
   const operation = OPERATIONS.find((_, i) => ops[i]!.exitCode === 0 && ops[i]!.stdout.trim() !== '')?.[0] ?? null
   const all = parseLog(log.stdout)
-  const changed = status.exitCode === 0 ? status.stdout.split('\n').filter(Boolean).length : 0
+  const statusError = status.exitCode === 0 ? undefined : status.stderr.trim() || `git status exited with ${status.exitCode}`
+  const changed = statusError ? 0 : status.stdout.split('\n').filter(Boolean).length
   const headHash = head.stdout.trim()
   const refs = [log.stdout, stash.stdout, headHash, remotes.stdout, branch.stdout, locals.stdout, operation].join('\x00')
   // Every branch by full name, local then remote, without the remotes' HEAD pointers.
   const branches = locals.stdout.split('\n').filter(r => r && !r.endsWith('/HEAD'))
   // Narrowed to a branch, the uncommitted row shows only when HEAD is in its history.
   const working: Commit | null =
-    changed && headHash && (!only || all.some(c => c.hash === headHash))
+    (changed || statusError) && headHash && (!only || all.some(c => c.hash === headHash))
       ? {
           kind: 'working',
           hash: WORKING,
@@ -68,7 +70,7 @@ export async function loadGraph(run: Run, limit: number, only: string | null = n
           refs: [],
           author: '*',
           date: '*',
-          subject: `Uncommitted Changes (${changed})`,
+          subject: statusError ? 'Uncommitted Changes (unknown: git status failed)' : `Uncommitted Changes (${changed})`,
         }
       : null
   return {
@@ -90,6 +92,7 @@ export async function loadGraph(run: Run, limit: number, only: string | null = n
     // What decides a redraw: everything but the relative parts that do not move.
     raw: `${refs}\x00${status.stdout}`,
     refs,
+    statusError,
   }
 }
 

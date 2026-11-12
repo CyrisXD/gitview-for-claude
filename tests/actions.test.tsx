@@ -98,7 +98,8 @@ test('a stopped operation offers continue and abort on the uncommitted row', asy
   expect(acts.find(a => a.id === 'working:abort')!.run!('', '')).toEqual([['cherry-pick', '--abort']])
   expect(acts.find(a => a.id === 'working:continue')!.run!('', '')).toEqual([
     ['-c', 'core.whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab', 'diff', '--check', 'HEAD'],
-    ['add', '-u'],
+    ['diff', '--name-only', '-z', '--diff-filter=U'],
+    ['add', '--pathspec-from-file=-', '--pathspec-file-nul'],
     ['cherry-pick', '--continue'],
   ])
 })

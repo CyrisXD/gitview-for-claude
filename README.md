@@ -99,7 +99,7 @@ Run `claude` in any terminal and the pane docks beside the conversation, with th
 
 ## Install
 
-Gitview is a Claude Code plugin. Add this repository as a marketplace and install it:
+Gitview is a Claude Code plugin and needs git 2.24 or later on your PATH (`git --version`). Add this repository as a marketplace and install it:
 
 ```
 /plugin marketplace add CyrisXD/gitview-for-claude
@@ -128,6 +128,9 @@ No. Gitview only reads until you choose an action and press **Run**. Git's own p
 
 **What if the repository changes while a confirm step is open?**
 Run reads the repository again first. If a branch, commit or stash moved since the step was shown (Claude or a terminal changed it), nothing runs and the pane redraws, so you never reset or drop something other than what you saw. Its automatic reads also ignore a repository's own fsmonitor, external diff and textconv settings, so opening a downloaded repository runs nothing from it.
+
+**What does Continue stage after a conflict?**
+Only the files that were in conflict, after checking none still holds conflict markers. Other edits in your working tree stay out of the commit.
 
 **Does it send my code anywhere?**
 No. It runs `git` on your machine in the session's folder. The only network traffic is a push or pull you start yourself.
