@@ -48,7 +48,8 @@ export async function loadGraph(run: Run, limit: number, only: string | null = n
     run(git('rev-parse', 'HEAD')),
     run(git('remote')),
     run(git('symbolic-ref', '--short', '-q', 'HEAD')),
-    run(git('for-each-ref', '--format=%(refname)', 'refs/heads', 'refs/remotes')),
+    // Newest first: the branch menu can show only the first few dozen.
+    run(git('for-each-ref', '--sort=-committerdate', '--format=%(refname)', 'refs/heads', 'refs/remotes')),
   ])
   // The pseudo-ref each stopped operation leaves; REBASE_HEAD is set while a rebase waits on a conflict.
   const ops = await Promise.all(OPERATIONS.map(([, ref]) => run(git('rev-parse', '-q', '--verify', ref))))

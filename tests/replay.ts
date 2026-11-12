@@ -15,7 +15,7 @@ export const PANE = {
   props: { title: 'Gitview', isFocused: false, bodyColumns: 120, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
 } as const
 
-const HARDENED = new Set(['core.fsmonitor=false', '--no-ext-diff', '--no-textconv'])
+const HARDENED = new Set(['core.fsmonitor=false', '--no-ext-diff', '--no-textconv', '--sort=-committerdate'])
 const value = (o: Out) => ({ value: { ...o, isStdoutTruncated: false, isStderrTruncated: false } })
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

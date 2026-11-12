@@ -78,6 +78,18 @@ const clip = (raw: string, n: number) => {
   const s = visible(raw)
   return s.length > n ? `${s.slice(0, n - 1)}…` : s
 }
+// A Select takes at most 64 options, and the engine refuses the whole pane past that (a repository
+// with hundreds of branches drew nothing). The branches come newest first; the one narrowed to stays.
+const MAX_OPTIONS = 64
+export const branchOptions = (branches: string[], narrowed: string | null) => {
+  const shown = branches.slice(0, MAX_OPTIONS - 2)
+  if (narrowed && !shown.includes(narrowed)) shown.push(narrowed)
+  return [
+    { value: '*', label: branches.length > shown.length ? `All branches (${branches.length})` : 'All branches' },
+    ...shown.map(r => ({ value: r, label: visible(r.replace(/^refs\/(heads|remotes)\//, '')) })),
+  ]
+}
+
 // git's long answers (a stash apply prints the whole status) cut to their first lines.
 export const lines = (s: string, n: number) => {
   const all = s.split('\n')
@@ -568,10 +580,7 @@ async function drawPane($: EngineInterface, e: RenderInput) {
           <Box flexShrink={0}>
             <Select
               key="branch-filter"
-              options={[
-                { value: '*', label: 'All branches' },
-                ...d.branches!.map(r => ({ value: r, label: r.replace(/^refs\/(heads|remotes)\//, '') })),
-              ]}
+              options={branchOptions(d.branches!, narrowed)}
               value={narrowed ?? '*'}
               onSelect={(value: string) => void setBranch($, value === '*' ? null : value)}
             />

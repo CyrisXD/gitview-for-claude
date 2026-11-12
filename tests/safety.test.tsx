@@ -4,6 +4,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { describe, groupsFor } from '../hooks/actions'
+import { branchOptions } from '../hooks/register'
 import { WORKING } from '../hooks/graph'
 import { badges } from '../hooks/graph'
 import { parseLog } from '../hooks/graph'
@@ -407,4 +408,26 @@ test('on Windows git starts in the system folder and is pointed at the repositor
   }
   windows = false
   await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
+})
+
+test('hundreds of branches still draw: the branch menu stays within 64 options', async ($, on) => {
+  const many = Array.from({ length: 600 }, (_, i) => `refs/remotes/origin/b${i}`)
+  on('command.register', () => ({ value: { command: 'gitview' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('process.run', (_, e) => {
+    const a = e.argv.join(' ')
+    if (a.includes(' log ')) return ok(LOG)
+    if (a.includes('rev-parse HEAD')) return ok('fffffff1\n')
+    if (a.includes('symbolic-ref')) return ok('main\n')
+    if (a.includes('refs/heads refs/remotes')) return ok(['refs/heads/main', ...many].join('\n') + '\n')
+    return ok('')
+  })
+  await $.command.run(OPEN)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Second/ })).toBeDefined()
+  await ui.unmount()
+  const opts = branchOptions(['refs/heads/main', ...many], 'refs/remotes/origin/b599')
+  expect(opts.length).toBeLessThanOrEqual(64)
+  expect(opts[0]!.label).toBe('All branches (601)')
+  expect(opts.at(-1)!.value).toBe('refs/remotes/origin/b599')
 })
