@@ -71,7 +71,7 @@ Claude commits, branches, merges and rebases faster than you can run `git log`. 
     <td width="50%" valign="top">
       <img src="assets/screenshots/spacing.png" alt="The graph drawn with wide lane spacing">
       <h3>Room for busy histories</h3>
-      Compact, normal or wide lanes, so a history with a dozen branches stays readable. Drag the column dividers to size the date, author and hash columns.
+      Every column resizes like a spreadsheet's: drag a divider and the columns after it move along. Drag the graph's edge and its lanes spread to fill it, so a history with a dozen branches stays readable.
     </td>
     <td width="50%" valign="top">
       <img src="assets/screenshots/graph.png" alt="The full graph with branch, remote and tag badges">
@@ -118,7 +118,7 @@ Start a session in any git repository. The Gitview pane opens on its own. If you
 
 | Where | What you get |
 | --- | --- |
-| Desktop app | The full pane: drawn graph and badges, row hover, click anywhere on a row, dropdown menus, graph spacing, resizable columns |
+| Desktop app | The full pane: drawn graph and badges, row hover, click anywhere on a row, dropdown menus, resizable columns, including the graph |
 | Terminal | Each commit marked in its lane colour, with details, actions and resizable columns |
 
 ## FAQ

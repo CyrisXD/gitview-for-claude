@@ -19,7 +19,7 @@ import stashPop from './fixtures/stash-pop'
 import stashPopIndex from './fixtures/stash-pop-index'
 import stashPush from './fixtures/stash-push'
 import tags from './fixtures/tags'
-import { dividers, dragTo } from '../hooks/columns'
+import { columns, dragTo } from '../hooks/columns'
 import { WIDTHS, shortDate } from '../hooks/register'
 import { badgeStyle, badgeSvg } from '../hooks/graph'
 import { PANE, act, badge, dump, goTo, replay, findAction, pick } from './replay'
@@ -433,44 +433,63 @@ test('refresh (terminal): the icon dims while it runs, then the status line says
 
 // The widths the heads are drawn at (each a Box keyed head:<column> in the Client).
 type Found = { props?: Record<string, unknown> } | undefined
+const COLS = ['graph', 'desc', 'date', 'author', 'commit'] as const
 const drawn = async (ui: { find(q: object): Promise<Found> }) => {
-  const at = async (col: string) => (await ui.find({ key: `head:${col}`, in: 'columns' }))?.props?.width
-  return { date: await at('date'), author: await at('author'), commit: await at('commit') }
+  const at = async (col: string) => (await ui.find({ key: `head:${col}`, in: 'columns' }))?.props?.width as number
+  const w = {} as Record<(typeof COLS)[number], number>
+  for (const c of COLS) w[c] = await at(c)
+  return w
 }
+// Where a column's divider is drawn, read off the drawn widths.
+const edge = (w: Record<string, number>, col: (typeof COLS)[number]) => columns({ ...w, desc: w.desc! } as never, true, 114).find(c => c.col === col)!.divider
 
 for (const surface of ['terminal', 'desktop'] as const) {
-  test(`columns (${surface}): dragging a divider resizes its column, and it clamps`, async ($, on) => {
+  test(`columns (${surface}): each divider sizes the column on its left, as in a spreadsheet`, async ($, on) => {
     replay(on, browse)
     await open($)
     const ui = await $.ui.mount({ ...PANE, surface })
     await ui.resize({ columns: 114, rows: 1, in: 'columns' })
-    // 114 across: Commit's divider at 104, Author's at 89, Date's at 71.
-    expect(await drawn(ui)).toEqual({ date: 17, author: 14, commit: 9 })
     const drag = async (from: number, to: number) => {
       await ui.pointer({ type: 'down', x: from, y: 0, button: 'left', in: 'columns' })
       await ui.pointer({ type: 'move', x: to, y: 0, button: 'left', in: 'columns' })
       await ui.pointer({ type: 'up', x: to, y: 0, button: 'left', in: 'columns' })
     }
+    const sum = (w: Record<string, number>) => COLS.reduce((n, c) => n + w[c]!, 0) + COLS.length
+    let w = await drawn(ui)
+    expect({ date: w.date, author: w.author, commit: w.commit }).toEqual({ date: 17, author: 14, commit: 9 })
+    expect(sum(w)).toBe(114) // Description fills: the columns and their dividers span the Client's 114 cells
     // Pressing away from a divider picks nothing up.
-    await drag(40, 30)
-    expect(await drawn(ui)).toEqual({ date: 17, author: 14, commit: 9 })
+    await drag(edge(w, 'desc') - 8, 3)
+    expect(await drawn(ui)).toEqual(w)
+    // Date's edge 3 right: Date grows; Author and Commit keep their widths; Description, filling, gives 3.
+    const before = w
+    await drag(edge(w, 'date'), edge(w, 'date') + 3)
+    w = await drawn(ui)
+    expect(w).toEqual({ ...before, date: before.date + 3, desc: before.desc - 3 })
     // Mid-drag the dragged head says its width (the desktop redraws the rows only on release).
-    await ui.pointer({ type: 'down', x: 89, y: 0, button: 'left', in: 'columns' })
-    await ui.pointer({ type: 'move', x: 84, y: 0, button: 'left', in: 'columns' })
-    expect(await ui.find({ type: 'Text', text: 'Author · 19', in: 'columns' })).toBeDefined()
-    await ui.pointer({ type: 'up', x: 84, y: 0, button: 'left', in: 'columns' })
-    expect(await ui.find({ type: 'Text', text: /^Author$/, in: 'columns' })).toBeDefined()
-    await drag(85, 89) // back to 14
-    // Author's divider dragged 10 left (one cell off still catches it).
-    await drag(90, 80)
-    expect(await drawn(ui)).toEqual({ date: 17, author: 23, commit: 9 })
-    // A redraw from the pane's own state keeps the widths (they were stored, not only shown),
-    // and the rows are drawn at them too.
+    await ui.pointer({ type: 'down', x: edge(w, 'author'), y: 0, button: 'left', in: 'columns' })
+    await ui.pointer({ type: 'move', x: edge(w, 'author') + 5, y: 0, button: 'left', in: 'columns' })
+    expect(await ui.find({ type: 'Text', text: `Author · ${w.author + 5}`, in: 'columns' })).toBeDefined()
+    await ui.pointer({ type: 'up', x: edge(w, 'author') + 5, y: 0, button: 'left', in: 'columns' })
+    w = await drawn(ui)
+    // Description's own edge 10 left: it stops filling, and the columns after it move left at their widths.
+    const kept = w
+    await drag(edge(w, 'desc'), edge(w, 'desc') - 10)
+    w = await drawn(ui)
+    expect(w).toEqual({ ...kept, desc: kept.desc - 10 })
+    expect(edge(w, 'commit')).toBe(edge(kept, 'commit') - 10)
+    // The graph's edge 6 right: the graph grows and pushes every column after it, none resized.
+    const pushed = w
+    await drag(edge(w, 'graph'), edge(w, 'graph') + 6)
+    w = await drawn(ui)
+    expect(w).toEqual({ ...pushed, graph: pushed.graph + 6 })
+    expect(edge(w, 'date')).toBe(edge(pushed, 'date') + 6)
+    // A redraw from the pane's own state keeps the widths (they were stored, not only shown).
     await ui.redraw()
-    expect(await drawn(ui)).toEqual({ date: 17, author: 23, commit: 9 })
-    // Date dragged far left stops at 60 wide.
-    await drag(61, 0)
-    expect((await drawn(ui)).date).toBe(60)
+    expect(await drawn(ui)).toEqual(w)
+    // Date dragged far left stops at 4.
+    await drag(edge(w, 'date'), 0)
+    expect((await drawn(ui)).date).toBe(4)
   })
 }
 
@@ -479,8 +498,9 @@ test('columns: a message with junk widths is clamped, not stored as is', async (
   await open($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.resize({ columns: 114, rows: 1, in: 'columns' })
-  await ui.post({ widths: { date: 'x', author: -5, commit: 1e9 } }, { in: 'columns' })
-  expect(await drawn(ui)).toEqual({ date: 17, author: 4, commit: 60 })
+  await ui.post({ widths: { graph: null, desc: 'x', date: 'x', author: -5, commit: 1e9 } }, { in: 'columns' })
+  const w = await drawn(ui)
+  expect({ date: w.date, author: w.author, commit: w.commit }).toEqual({ date: 17, author: 4, commit: 200 })
 })
 
 test('columns: where no Client is drawn (mobile) the heads are plain and Author is there', async ($, on) => {
@@ -491,11 +511,12 @@ test('columns: where no Client is drawn (mobile) the heads are plain and Author 
   expect(await ui.find({ type: 'Text', text: /^Commit$/ })).toBeDefined()
 })
 
-test('columns: a drag stops where Description keeps 12 cells, and a column at 4', () => {
-  // 60 across: Commit's divider at 50, Author's at 35, Date's at 17.
-  expect(dividers(WIDTHS, true, 60).map(d => d.x)).toEqual([50, 35, 17])
-  expect(dividers(dragTo(WIDTHS, true, 60, 'date', 0), true, 60)[2]!.x).toBe(12)
-  expect(dragTo(WIDTHS, true, 60, 'commit', 59).commit).toBe(4)
+test('columns: Description keeps 12 cells while it fills, and a dragged column stops at 4', () => {
+  const w = { ...WIDTHS, graph: 10 }
+  const at = columns(w, true, 60)
+  expect(at.map(c => c.width)).toEqual([10, 12, 17, 14, 9]) // 60 is too narrow: Description keeps 12 and the row runs past
+  expect(dragTo(w, true, 60, 'commit', 0).commit).toBe(4)
+  expect(dragTo(w, true, 60, 'graph', 30).graph).toBe(30)
 })
 
 test('header: search fills the first row with the refresh icon at its right end, the counts below', async ($, on) => {
@@ -660,26 +681,21 @@ test('rows: one blank Button spans the whole row on desktop; text cells open it 
   }
 })
 
-test('graph spacing: compact, normal and wide set the room between lanes on desktop; the terminal has no control', async ($, on) => {
+test('graph width: the lanes spread to fill the graph column as it is dragged wider', async ($, on) => {
   const { ui } = await mount($, on, browse as never)
-  const width = async () => {
+  await ui.resize({ columns: 114, rows: 1, in: 'columns' })
+  const svgWidth = async () => {
     const svgs = (await ui.findAll({ type: 'Svg' })) as { props?: { alt?: string; source?: string } }[]
     const row = svgs.find(s => s.props?.alt?.startsWith('graph lane'))!
-    return Number(row.props!.source!.match(/width="(\d+)"/)![1])
+    return Number(row.props!.source!.match(/width="([\d.]+)"/)![1])
   }
-  const normal = await width()
-  await ui.select({ key: 'graph-spacing', value: 'wide' })
-  const wide = await width()
-  await ui.select({ key: 'graph-spacing', value: 'compact' })
-  const compact = await width()
-  expect(compact).toBeLessThan(normal)
-  expect(wide).toBeGreaterThan(normal)
-  // Every lane moves by the same step, so the lane count is the same at each width.
-  expect((wide - 20) / 26).toBe((normal - 20) / 16)
-  expect((compact - 20) / 10).toBe((normal - 20) / 16)
-  await ui.unmount()
-  const term = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await term.find({ key: 'graph-spacing' })).toBeUndefined()
+  const narrow = await svgWidth()
+  const w = await drawn(ui)
+  await ui.pointer({ type: 'down', x: edge(w, 'graph'), y: 0, button: 'left', in: 'columns' })
+  await ui.pointer({ type: 'move', x: edge(w, 'graph') + 10, y: 0, button: 'left', in: 'columns' })
+  await ui.pointer({ type: 'up', x: edge(w, 'graph') + 10, y: 0, button: 'left', in: 'columns' })
+  expect(await svgWidth()).toBe(narrow + 10 * 8)
+  expect(await ui.find({ key: 'graph-spacing' })).toBeUndefined()
 })
 
 test('/gitview opens the Gitview pane', async ($, on) => {

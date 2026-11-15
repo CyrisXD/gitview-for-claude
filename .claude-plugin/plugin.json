@@ -1,6 +1,6 @@
 {
   "name": "gitview",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A live branch and commit graph of the session's repository in a side pane, with commit details, diffs and git actions",
   "author": {
     "name": "CyrisXD",

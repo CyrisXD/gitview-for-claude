@@ -44,8 +44,9 @@ export type Pending = {
 
 export type ActionResult = { isOk: boolean; text: string }
 
-// Column widths in cells, set by dragging the dividers in the column heads.
-export type Widths = { date: number; author: number; commit: number }
+// Column widths in cells, set by dragging the dividers in the column heads. graph null: sized to
+// its lanes; desc null: fills the room the others leave.
+export type Widths = { graph: number | null; desc: number | null; date: number; author: number; commit: number }
 
 // The Refresh button's own feedback: running while it reads, then what it found and when.
 export type RefreshState = { status: 'running' } | { status: 'done'; text: string }
@@ -97,7 +98,6 @@ declare module 'claude-code' {
       result: Shaped<ActionResult | null>
       refreshing: Shaped<RefreshState | null>
       widths: Shaped<Widths>
-      spacing: Shaped<'auto' | 'compact' | 'normal' | 'wide'> // room between the graph's lanes, desktop
       remotes: Shaped<RemotesMode>
       only: Shaped<string | null> // the branch the graph is narrowed to, a full ref name
       filter: Shaped<string> // the search box's text: rows whose subject, author, hash or refs hold it

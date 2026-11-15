@@ -53,9 +53,9 @@ export function merge(commits: Commit[], stashes: Commit[], working: Commit | nu
 // One segment of a line, from row r1 to r2 (r2 = r1 + 1), x in lane units.
 export type Edge = { x1: number; r1: number; x2: number; r2: number; lane: number }
 export type Layout = { cols: number[]; edges: Edge[]; lanes: number }
-// A history with dozens of open branches made the graph wider than the pane, and the
-// description column (subjects and badges) got no room at all.
-export const MAX_LANES = 10
+// Lanes the graph column makes room for by default: past this a busy history would leave the
+// description column (subjects and badges) no room. Dragging the column wider shows more.
+export const AUTO_LANES = 10
 
 // Lanes hold the hash each is waiting for. A commit takes the lane waiting
 // for it (or a free one), hands it to its first parent and opens lanes for
@@ -111,15 +111,11 @@ export function layout(commits: Commit[]): Layout {
       lane: g.lane,
     })),
   )
-  // Lanes past the cap are clipped at the graph's right edge, so the description keeps its room.
-  return { cols, edges, lanes: Math.min(width, MAX_LANES) }
+  return { cols, edges, lanes: width }
 }
 
 export const ROW_PX = 28
 const LANE = 16
-// Room between lanes, in px: a busy graph fits narrow, or spreads out so its crossings read.
-export const SPACING = { compact: 10, normal: LANE, wide: 26 } as const
-export type Spacing = keyof typeof SPACING
 const PAD = 10
 // The Claude desktop app's muted tones (mineral and plum from its stylesheet), with sky, ochre,
 // olive, rose, red and stone picked at the same softness. No clay orange, by request.
@@ -129,12 +125,29 @@ const GREY = '#898781' // the app's warm grey
 export const laneColor = (lane: number) => COLORS[lane % COLORS.length]!
 export const graphWidth = (lanes: number, lane: number = LANE) => PAD * 2 + (lanes - 1) * lane
 
+// The desktop lays columns out in cells and draws the graph in pixels. A cell measured about 8.8 px
+// there; 8 keeps the drawing inside its column, a little room to spare at most.
+export const CELL_PX = 8
+const MIN_GAP = 6
+const MAX_GAP = 26
+// The graph column's default width in cells: its lanes up to AUTO_LANES, compact once busy.
+export const autoGraphCells = (lanes: number, isTerminal: boolean) =>
+  isTerminal ? Math.min(lanes, AUTO_LANES) * 2 : Math.ceil(graphWidth(Math.min(lanes, AUTO_LANES), lanes > 6 ? 10 : LANE) / CELL_PX)
+// A graph column `cells` wide, drawn: its width in px and the room between lanes, which grows with
+// the column up to MAX_GAP; lanes that do not fit at MIN_GAP are clipped at the right edge.
+export function fitGraph(lanes: number, cells: number) {
+  const W = cells * CELL_PX
+  const gap = lanes > 1 ? Math.max(MIN_GAP, Math.min(MAX_GAP, (W - PAD * 2) / (lanes - 1))) : LANE
+  return { W, gap }
+}
+
 // Each row draws its own slice of the graph: the lower half of every line
 // leaving it and the upper half of every line arriving, so stacked rows of
 // equal height join up. A curve is one cubic split at the row boundary.
-export function rowSvg(commits: Commit[], lay: Layout, r: number, isHead: boolean, gap: number = LANE): string {
+export function rowSvg(commits: Commit[], lay: Layout, r: number, isHead: boolean, gap: number = LANE, W = graphWidth(lay.lanes, gap)): string {
   const H = ROW_PX
-  const W = graphWidth(lay.lanes, gap)
+  // A commit on a lane past the right edge sits at the last lane that fits.
+  const lastLane = Math.max(0, Math.floor((W - PAD - 4) / gap))
   const x = (lane: number) => PAD + lane * gap
   const c = commits[r]!
   const paths: string[] = []
@@ -159,7 +172,7 @@ export function rowSvg(commits: Commit[], lay: Layout, r: number, isHead: boolea
     }
   }
 
-  const cx = x(Math.min(lay.cols[r]!, lay.lanes - 1)) // a commit on a clipped lane sits at the edge
+  const cx = x(Math.min(lay.cols[r]!, lastLane))
   const cy = H / 2
   const color = laneColor(lay.cols[r]!)
   let node: string

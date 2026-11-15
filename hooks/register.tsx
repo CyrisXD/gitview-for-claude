@@ -3,12 +3,11 @@ import type { EngineInterface, Register, RenderInput } from 'claude-code'
 
 import type { ActionResult, Commit, Details, FileChange, FileDiff, GraphData, Pending, RefreshState, RemotesMode, View, Widths } from '../types'
 import { STAGE_LISTED, describe, groupsFor, visible } from './actions'
-import { DESC_MIN, MIN } from './columns'
+import { MAX, MIN } from './columns'
 import type { Action } from './actions'
 import { emptyDetails, fingerprint, loadDetails, loadDiff, loadGraph } from './git'
 import type { Run } from './git'
-import { ROW_PX, SPACING, badgeStyle, badgeSvg, badges, graphWidth, isHeadCommit, laneColor, layout, rowSvg, WORKING } from './graph'
-import type { Spacing } from './graph'
+import { ROW_PX, autoGraphCells, badgeStyle, badgeSvg, badges, fitGraph, graphWidth, isHeadCommit, laneColor, layout, rowSvg, WORKING } from './graph'
 
 const PANE = 'gitview'
 const TITLE = 'Gitview'
@@ -36,11 +35,10 @@ const diff = atom({ plugin: 'gitview', key: 'diff' } as const, null, { shape: 'd
 const pending = atom({ plugin: 'gitview', key: 'pending' } as const, null, { shape: 'pending-1' })
 const result = atom({ plugin: 'gitview', key: 'result' } as const, null, { shape: 'result-1' })
 const refreshing = atom({ plugin: 'gitview', key: 'refreshing' } as const, null as RefreshState | null, { shape: 'refreshing-1' })
-export const WIDTHS: Widths = { date: 17, author: 14, commit: 9 }
-const widths = atom({ plugin: 'gitview', key: 'widths' } as const, WIDTHS, { shape: 'widths-2' })
+export const WIDTHS: Widths = { graph: null, desc: null, date: 17, author: 14, commit: 9 }
+const widths = atom({ plugin: 'gitview', key: 'widths' } as const, WIDTHS, { shape: 'widths-3' })
 const only = atom({ plugin: 'gitview', key: 'only' } as const, null as string | null, { shape: 'only-1' })
 const filter = atom({ plugin: 'gitview', key: 'filter' } as const, '', { shape: 'filter-1' })
-const spacing = atom({ plugin: 'gitview', key: 'spacing' } as const, 'auto' as Spacing | 'auto', { shape: 'spacing-2' })
 const remotes = atom({ plugin: 'gitview', key: 'remotes' } as const, 'auto' as RemotesMode, { shape: 'remotes-1' })
 
 // Mirrors of what the handlers need, so they never wait on a read.
@@ -529,8 +527,17 @@ export const register: Register = on => {
   on('ui.message', async ($, e, next) => {
     if (e.requestId !== PANE || e.element !== 'columns') return next(e)
     const w = (e.data as { widths?: Partial<Widths> } | null)?.widths
-    const size = (n: unknown, d: number) => (typeof n === 'number' && Number.isFinite(n) ? Math.max(MIN, Math.min(60, Math.round(n))) : d)
-    if (w) await update($, widths, old => ({ date: size(w.date, old.date), author: size(w.author, old.author), commit: size(w.commit, old.commit) }))
+    const size = (n: unknown, d: number) => (typeof n === 'number' && Number.isFinite(n) ? Math.max(MIN, Math.min(MAX, Math.round(n))) : d)
+    // The graph and Description stay as they are (sized to the lanes, filling) until their own edge moves.
+    const maybe = (n: unknown, d: number | null) => (n === null ? d : size(n, d ?? MIN))
+    if (w)
+      await update($, widths, old => ({
+        graph: maybe(w.graph, old.graph),
+        desc: maybe(w.desc, old.desc),
+        date: size(w.date, old.date),
+        author: size(w.author, old.author),
+        commit: size(w.commit, old.commit),
+      }))
     return {}
   })
 
@@ -565,7 +572,6 @@ async function drawPane($: EngineInterface, e: RenderInput) {
   const res = await read($, result)
   const rf = await read($, refreshing)
   const narrowed = await read($, only)
-  const sp = await read($, spacing)
   const rm = await read($, remotes)
   const typed = await read($, filter) // as typed: trimming it would eat the space before a second word
   const q = typed.trim()
@@ -585,7 +591,7 @@ async function drawPane($: EngineInterface, e: RenderInput) {
   // A narrow pane drops Date so Description keeps room to read; Author always stays.
   const showDate = width >= 70
   // Unchanged values (a scroll tick's ask): the drawing they made last time.
-  const key = [e.surface, width, typed, narrowed, sp, rm, d, v, det, fd, pend, res, rf, w].map(keyOf).join('\0')
+  const key = [e.surface, width, typed, narrowed, rm, d, v, det, fd, pend, res, rf, w].map(keyOf).join('\0')
   if (kept?.key === key) return kept.tree as JSX.Element
   const keep = (tree: JSX.Element) => ((kept = { key, tree }), tree)
 
@@ -621,21 +627,6 @@ async function drawPane($: EngineInterface, e: RenderInput) {
               ]}
               value={rm}
               onSelect={(value: string) => void setRemotes($, value === 'show' || value === 'hide' ? value : 'auto')}
-            />
-          </Box>
-        )}
-        {Select && e.surface !== 'terminal' && (
-          <Box flexShrink={0}>
-            <Select
-              key="graph-spacing"
-              options={[
-                { value: 'auto', label: 'Graph: auto' },
-                { value: 'compact', label: 'Graph: compact' },
-                { value: 'normal', label: 'Graph: normal' },
-                { value: 'wide', label: 'Graph: wide' },
-              ]}
-              value={sp}
-              onSelect={(value: string) => void update($, spacing, () => (value in SPACING ? (value as Spacing) : 'auto'))}
             />
           </Box>
         )}
@@ -695,19 +686,20 @@ async function drawPane($: EngineInterface, e: RenderInput) {
   }
 
   const lay = layout(d.commits)
-  // Auto: compact once the graph is busy or the pane narrow, so the description keeps its room.
-  const gap = sp === 'auto' ? (lay.lanes > 6 || width < 100 ? SPACING.compact : SPACING.normal) : SPACING[sp] ?? SPACING.normal
+  // The graph column's width in cells (dragged, or sized to the lanes); the lanes spread to fill it.
+  const gcells = w.graph ?? autoGraphCells(lay.lanes, e.surface === 'terminal')
+  const fit = fitGraph(lay.lanes, gcells)
   const Svg = e.surface !== 'terminal' && 'Svg' in els ? els.Svg : null
 
   const graphCell = (r: number) => {
     const c = d.commits[r]!
     if (Svg) {
       return (
-        <Svg source={rowSvg(d.commits, lay, r, isHeadCommit(c), gap)} alt={`graph lane ${lay.cols[r]! + 1}`} height={ROW_PX} />
+        <Svg source={rowSvg(d.commits, lay, r, isHeadCommit(c), fit.gap, fit.W)} alt={`graph lane ${lay.cols[r]! + 1}`} height={ROW_PX} />
       )
     }
     const mark = c.kind === 'working' ? '◌' : c.kind === 'stash' ? '◎' : c.parents.length > 1 ? '◯' : '●'
-    return <Text color={laneColor(lay.cols[r]!)}>{'  '.repeat(Math.min(lay.cols[r]!, lay.lanes - 1)) + mark}</Text>
+    return <Text color={laneColor(lay.cols[r]!)}>{'  '.repeat(Math.min(lay.cols[r]!, Math.floor((gcells - 1) / 2))) + mark}</Text>
   }
 
   // Badges sit outside the Button: a desktop button drops a Text's background.
@@ -716,7 +708,7 @@ async function drawPane($: EngineInterface, e: RenderInput) {
     // Remote-only branches last: past the first two they go into the count, local ones stay seen.
     const all = badges(c, d.remotes, d.localBranches).sort((x, y) => Number(x.kind === 'remote') - Number(y.kind === 'remote'))
     return (
-      <Box flexDirection="row" alignItems="center" gap={1} width="100%" flexShrink={1} minWidth={0} overflow="hidden">
+      <Box flexDirection="row" alignItems="center" gap={1} overflow="hidden" {...(w.desc === null ? { width: '100%', flexShrink: 1, minWidth: 0 } : { width: w.desc, flexShrink: 0 })}>
         {/* A badge keeps up to 14 cells (a tag like v1.2.0 whole) and gives way past that before
             the subject does: in a narrow column the subject kept 2 cells and wrapped. */}
         {all.slice(0, MAX_BADGES).map(b => {
@@ -978,9 +970,11 @@ async function drawPane($: EngineInterface, e: RenderInput) {
   // Only the terminal and desktop draw a Client (another table may still hand one out, drawn as nothing).
   const Client = (e.surface === 'terminal' || e.surface === 'desktop') && 'Client' in els ? els.Client : null
   const graphHead = Svg ? (
-    <Svg source={`<svg xmlns="http://www.w3.org/2000/svg" width="${graphWidth(lay.lanes, gap)}" height="16"/>`} alt="graph column" height={16} />
+    <Box width={gcells} flexShrink={0}>
+      <Svg source={`<svg xmlns="http://www.w3.org/2000/svg" width="${fit.W}" height="16"/>`} alt="graph column" height={16} />
+    </Box>
   ) : (
-    <Box width={lay.lanes * 2}>
+    <Box width={gcells} flexShrink={0}>
       <Text> </Text>
     </Box>
   )
@@ -992,12 +986,13 @@ async function drawPane($: EngineInterface, e: RenderInput) {
     </Box>
   )
   // Where a Client can be drawn its dividers drag to resize the columns; elsewhere the heads are plain.
-  const columnHeads = (
+  // The Client spans the whole row, the graph's head included, so the graph's edge drags too.
+  const columnHeads = Client ? (
+    <Client key="columns" module="./columns.ts" props={{ widths: { ...w, graph: gcells }, showDate }} height={1} flexGrow={1} />
+  ) : (
     <Box flexDirection="row" gap={1}>
       {graphHead}
-      {Client ? (
-        <Client key="columns" module="./columns.ts" props={{ widths: w, showDate }} height={1} flexGrow={1} />
-      ) : (
+      {
         [
           <Box width="100%" flexShrink={1} minWidth={0}>
             <Text dimColor bold>
@@ -1008,7 +1003,7 @@ async function drawPane($: EngineInterface, e: RenderInput) {
           head('Author', w.author),
           head('Commit', w.commit),
         ]
-      )}
+      }
     </Box>
   )
 
@@ -1034,8 +1029,10 @@ async function drawPane($: EngineInterface, e: RenderInput) {
     )
   const rowOf = (c: Commit, r: number) => (
     <Box flexDirection="column">
-      <Box key={`row:${c.hash}`} flexDirection="row" alignItems="center" gap={1} hover={{ backgroundColor: HOVER }}>
-        <Box flexShrink={0}>{graphCell(r)}</Box>
+      <Box key={`row:${c.hash}`} flexDirection="row" alignItems="center" gap={1} overflow="hidden" hover={{ backgroundColor: HOVER }}>
+        <Box width={gcells} flexShrink={0} overflow="hidden">
+          {graphCell(r)}
+        </Box>
         {description(c, r)}
         {showDate && (
           <Box width={w.date} flexShrink={0} overflow="hidden" height={oneRow}>

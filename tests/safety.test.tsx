@@ -6,7 +6,7 @@ import type { On } from 'claude-code'
 import { describe, groupsFor } from '../hooks/actions'
 import { branchOptions, fitDate, fitHash } from '../hooks/register'
 import { WORKING } from '../hooks/graph'
-import { MAX_LANES, SPACING, badges, graphWidth, layout, rowSvg } from '../hooks/graph'
+import { AUTO_LANES, CELL_PX, autoGraphCells, badges, fitGraph, graphWidth, layout, rowSvg } from '../hooks/graph'
 import { parseLog } from '../hooks/graph'
 
 // A typed /gitview; the rest of a real command.run input is left out.
@@ -432,16 +432,19 @@ test('hundreds of branches still draw: the branch menu stays within 64 options',
   expect(opts.at(-1)!.value).toBe('refs/remotes/origin/b599')
 })
 
-test('many open branches cap the graph at MAX_LANES so the description keeps its room', async () => {
+test('many open branches: the graph column holds AUTO_LANES by default, and lanes past its edge are clipped', async () => {
   // 30 branch tips, each one commit off a shared root far below: 30 lanes open at once.
   const tips = Array.from({ length: 30 }, (_, i) => row(`aaaa${String(i).padStart(4, '0')}`, 'ccccccc1', `b${i}`, `Tip ${i}`)).join('')
   const cs = parseLog(tips + row('ccccccc1', '', '', 'Root'))
   const lay = layout(cs)
-  expect(lay.lanes).toBe(MAX_LANES)
-  const svg = rowSvg(cs, lay, 29, false)
-  expect(svg).toContain(`width="${graphWidth(MAX_LANES)}"`)
+  const cells = autoGraphCells(lay.lanes, false)
+  expect(cells).toBe(Math.ceil(graphWidth(AUTO_LANES, 10) / CELL_PX))
+  const fit = fitGraph(lay.lanes, cells)
+  const svg = rowSvg(cs, lay, 29, false, fit.gap, fit.W)
+  expect(svg).toContain(`width="${fit.W}"`)
   const cx = Number(svg.match(/<circle cx="([\d.]+)"/)![1])
-  expect(cx).toBeLessThanOrEqual(graphWidth(MAX_LANES))
+  expect(cx).toBeLessThanOrEqual(fit.W)
+  expect(autoGraphCells(lay.lanes, true)).toBe(AUTO_LANES * 2)
 })
 
 // A repository with `n` remote branches; `ran` keeps every log's argv.
@@ -495,12 +498,8 @@ test('dates and hashes fit their columns', () => {
   expect(fitHash('66b570f1234', 4)).toBe('66b5')
 })
 
-test('auto spacing draws a busy graph compact', async ($, on) => {
-  const tips = Array.from({ length: 30 }, (_, i) => row(`aaaa${String(i).padStart(4, '0')}`, 'ccccccc1', `b${i}`, `Tip ${i}`)).join('')
-  manyRemotes(on, 0, tips + row('ccccccc1', '', '', 'Root'))
-  await $.command.run(OPEN)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  const head = (await ui.findAll({ type: 'Svg' })).find(s => (s as { props?: { alt?: string } }).props?.alt === 'graph column') as unknown as { props: { source: string } }
-  expect(head.props.source).toContain(`width="${graphWidth(MAX_LANES, SPACING.compact)}"`)
-  await ui.unmount()
+test('a wider graph column spreads the lanes, up to a limit', () => {
+  expect(fitGraph(5, 10).gap).toBe((80 - 20) / 4)
+  expect(fitGraph(5, 40).gap).toBe(26)
+  expect(fitGraph(30, 10).gap).toBe(6)
 })
