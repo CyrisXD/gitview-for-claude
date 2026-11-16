@@ -69,7 +69,7 @@ Claude commits, branches, merges and rebases faster than you can run `git log`. 
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="assets/screenshots/spacing.png" alt="The graph drawn with wide lane spacing">
+      <img src="assets/screenshots/spacing.png" alt="The graph column dragged wide, its lanes spread across it">
       <h3>Room for busy histories</h3>
       Every column resizes like a spreadsheet's: drag a divider and the columns after it move along. Drag the graph's edge and its lanes spread to fill it, so a history with a dozen branches stays readable.
     </td>
@@ -89,17 +89,10 @@ Claude commits, branches, merges and rebases faster than you can run `git log`. 
 
 Run `claude` in any terminal and the pane docks beside the conversation, with the same graph, details, menus and live updates. Here Claude writes a retry helper and commits it on a new branch, and the commit is at the top of the graph before Claude has finished replying.
 
-<details>
-<summary><strong>Watch the full 45-second walkthrough</strong></summary>
-<br>
-<p align="center">
-  <img src="assets/demo.gif" width="720" alt="Gitview in the Claude desktop app: opening a merge commit, reading a diff, confirming a merge, searching, changing the graph spacing, narrowing to one branch, and a new commit appearing live">
-</p>
-</details>
 
 ## Install
 
-Gitview is a Claude Code plugin and needs git 2.24 or later on your PATH (`git --version`). Add this repository as a marketplace and install it:
+Gitview is a Claude Code plugin and needs git 2.24 or later on your PATH (`git --version`). It is tested on macOS; Windows support is written but untested. Add this repository as a marketplace and install it:
 
 ```
 /plugin marketplace add CyrisXD/gitview-for-claude
