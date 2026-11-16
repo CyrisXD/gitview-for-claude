@@ -2,10 +2,10 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderInput } from 'claude-code'
 
 import type { ActionResult, Commit, Details, FileChange, FileDiff, GraphData, Pending, RefreshState, RemotesMode, View, Widths } from '../types'
-import { STAGE_LISTED, describe, groupsFor, visible } from './actions'
+import { STAGE_LISTED, describe, groupsFor, isChoice, visible, visibleText } from './actions'
 import { GAP, MAX, MIN } from './columns'
 import type { Action } from './actions'
-import { emptyDetails, fingerprint, loadDetails, loadDiff, loadGraph } from './git'
+import { emptyDetails, fingerprint, loadDetails, loadDiff, loadGraph, sshCommand } from './git'
 import type { Run } from './git'
 import { ROW_PX, autoGraphCells, badgeStyle, badgeSvg, badges, fitGraph, graphWidth, isHeadCommit, laneColor, layout, rowSvg, WORKING } from './graph'
 
@@ -52,6 +52,9 @@ let remotesMode: RemotesMode = 'auto'
 let adopted = false // whether a draw has handed the mirrors $.state's values yet
 let last = '' // the last git output written, so an unchanged poll does not redraw
 let lastRefs = '' // the same without the working tree's status
+// What the repository was when the open confirm step was shown, checked again at Run. A module
+// variable, not state: after a reload it is gone and the action refuses, which is the safe side.
+let shown: { key: string; all: string; refs: string } | null = null
 let shownStatus: GraphData['status'] = 'loading' // what the last read found: a repository or not
 let statusError: string | undefined // git status failed on the last read
 let stoppedOp: GraphData['operation'] = null // a merge, rebase, cherry-pick or revert waiting on conflicts
@@ -106,7 +109,8 @@ const MAX_BADGES = 2
 const BADGE_CHARS = 22
 
 // git's long answers (a stash apply prints the whole status) cut to their first lines.
-export const lines = (s: string, n: number) => {
+export const lines = (raw: string, n: number) => {
+  const s = visibleText(raw)
   const all = s.split('\n')
   return all.length > n ? `${all.slice(0, n).join('\n')}\n…` : s
 }
@@ -136,6 +140,16 @@ let place: { cwd?: string; pre: string[] } = { pre: [] }
 async function placeGit($: EngineInterface, repo: string) {
   const isWindows = (await $.env.get('OS')) === 'Windows_NT'
   place = isWindows ? { cwd: (await $.env.get('SystemRoot')) ?? 'C:\\Windows', pre: ['-C', repo] } : { pre: [] }
+}
+// GIT_TERMINAL_PROMPT stops only git's own prompt: ssh would still ask for a passphrase or a new
+// host key on the terminal under the conversation. BatchMode makes it fail instead (an agent still
+// works), unless the person runs ssh their own way, which is left alone. Read at the first action.
+let sshEnv: Record<string, string> | null = null
+async function sshEnvFor($: EngineInterface): Promise<Record<string, string>> {
+  const own =
+    (await $.env.get('GIT_SSH_COMMAND').catch(() => undefined)) || (await $.env.get('GIT_SSH').catch(() => undefined))
+  const configured = own ? '' : await sshCommand(runner($))
+  return own || configured ? {} : { GIT_SSH_COMMAND: 'ssh -o BatchMode=yes' }
 }
 const runGit = ($: EngineInterface, argv: string[], init: { timeoutMs: number; env: Record<string, string>; stdin?: string }) =>
   $.process.run([argv[0]!, ...place.pre, ...argv.slice(1)], place.cwd ? { ...init, cwd: place.cwd } : init)
@@ -306,6 +320,7 @@ async function startAction($: EngineInterface, hash: string, action: Action, sur
     $.ui.toast(`Copied ${clip(action.copy, 40)}`)
     return
   }
+  shown = { key: `${hash}:${action.id}`, all: last, refs: lastRefs }
   await setPending($, {
     id: action.id,
     hash,
@@ -340,9 +355,11 @@ async function runAction($: EngineInterface, action: Action) {
   // Changes in the working tree count for the uncommitted row's actions and every dangerous one
   // (a hard reset would throw away edits made after this was shown).
   const withStatus = p.hash === WORKING || !!action.isDanger
-  const seen = withStatus ? last : lastRefs
+  const snap = shown?.key === `${p.hash}:${p.id}` ? shown : null
   await refresh($)
-  if ((withStatus ? last : lastRefs) !== seen) {
+  if (!snap || (withStatus ? last !== snap.all : lastRefs !== snap.refs)) {
+    // The box now shows the repository as it is, so a second Run is checked against that.
+    shown = { key: `${p.hash}:${p.id}`, all: last, refs: lastRefs }
     await setPending($, { ...p, status: 'error', message: 'The repository changed since this was shown. Check the action above and run it again.' })
     return
   }
@@ -352,6 +369,12 @@ async function runAction($: EngineInterface, action: Action) {
     await setPending($, { ...p, status: 'error', message: `git status failed, so the working tree is unknown: ${lines(statusError, 3)}` })
     return
   }
+  // A choice restored from state after a reload is checked too: it goes into the command as a flag.
+  if (!isChoice(action, p.choice)) {
+    await setPending($, { ...p, status: 'error', message: `Pick one of the ${action.choice?.label.toLowerCase() ?? ''} options.` })
+    return
+  }
+  sshEnv ??= await sshEnvFor($)
   const out: string[] = []
   let prev = ''
   for (const argv of action.run(value, p.choice)) {
@@ -359,7 +382,7 @@ async function runAction($: EngineInterface, action: Action) {
     // git killed midway leaves index.lock or a half-done operation behind.
     const r = await runGit($, ['git', ...argv], {
       timeoutMs: 600_000,
-      env: { GIT_TERMINAL_PROMPT: '0', GIT_EDITOR: 'true' },
+      env: { GIT_TERMINAL_PROMPT: '0', GIT_EDITOR: 'true', ...sshEnv },
       ...(argv === STAGE_LISTED ? { stdin: prev } : {}),
     }).catch(err => ({
       exitCode: -1,
@@ -657,7 +680,7 @@ async function drawPane($: EngineInterface, e: RenderInput) {
         )}
       </Box>
       <Text dimColor wrap="truncate">
-        {[count, d.branch && `on ${d.branch}`, narrowed && `history of ${narrowed.replace(/^refs\/(heads|remotes)\//, '')}`, d.remotesHidden && `${d.remoteCount} remote branches hidden`].filter(Boolean).join(' · ')}
+        {[count, d.branch && `on ${visible(d.branch)}`, narrowed && `history of ${visible(narrowed.replace(/^refs\/(heads|remotes)\//, ''))}`, d.remotesHidden && `${d.remoteCount} remote branches hidden`].filter(Boolean).join(' · ')}
         {rf?.status === 'done' && <Text color={ADD}>{` · ✓ ${rf.text}`}</Text>}
       </Text>
       {/* Notices get full-width lines of their own: squeezed into the row above they wrapped word by word. */}
@@ -766,7 +789,7 @@ async function drawPane($: EngineInterface, e: RenderInput) {
           {/* Letter, path, then its counts right after it: they stay next to what they count. */}
           <Box flexShrink={1} minWidth={0} marginRight={1}>
             <Button key={`f:${f.path}`} plain onPress={() => void selectFile($, f)}>
-              {f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}
+              {f.oldPath ? `${visible(f.oldPath)} → ${visible(f.path)}` : visible(f.path)}
             </Button>
           </Box>
           <Box flexShrink={0}>
@@ -886,9 +909,8 @@ async function drawPane($: EngineInterface, e: RenderInput) {
             value={p.value}
             autoFocus
             submitLabel={a.label.replace('…', '')}
-            onInput={(value: string) => {
-              if (pendingNow) pendingNow = { ...pendingNow, value }
-            }}
+            // Each key redraws, so the command shown under the field is the one Run will start.
+            onInput={(value: string) => void (pendingNow && setPending($, { ...pendingNow, value }))}
             onSubmit={(value: string) => {
               if (!pendingNow) return
               pendingNow = { ...pendingNow, value }
@@ -932,7 +954,7 @@ async function drawPane($: EngineInterface, e: RenderInput) {
                 <Text bold>{x.message}</Text>
                 {(c.kind === 'commit' || c.kind === 'stash') && (
                   <Text dimColor>
-                    {x.author} &lt;{x.email}&gt; · {shortDate(x.date)} · {c.kind === 'stash' ? 'stash ' : ''}
+                    {visible(x.author)} &lt;{visible(x.email)}&gt; · {shortDate(x.date)} · {c.kind === 'stash' ? 'stash ' : ''}
                     <Text mono>{c.hash.slice(0, 7)}</Text>
                     {x.parents.length > 0 && (
                       <Text>
@@ -1045,7 +1067,7 @@ async function drawPane($: EngineInterface, e: RenderInput) {
           </Box>
         )}
         <Box width={w.author} flexShrink={0} overflow="hidden" height={oneRow}>
-          {cell(c, 'author', c.author)}
+          {cell(c, 'author', visible(c.author))}
         </Box>
         {/* marginRight matches the heads' divider after Commit, or Description fills GAP cells more here than in the heads. */}
         <Box width={w.commit} flexShrink={0} overflow="hidden" height={oneRow} marginRight={GAP}>

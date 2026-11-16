@@ -46,6 +46,13 @@ export const STAGE_LISTED = ['add', '--pathspec-from-file=-', '--pathspec-file-n
 export const visible = (s: string) =>
   s.replace(/[\0-\x1f\x7f-\x9f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g, ch => `<U+${ch.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}>`)
 
+// visible() for text of many lines (messages, diffs, git's errors): tab and newline stay, a carriage
+// return (git's progress lines) becomes a newline, and every other control or bidi character is escaped.
+export const visibleText = (s: string) => s.replace(/\r\n?/g, '\n').split(/([\t\n])/).map(p => (p === '\t' || p === '\n' ? p : visible(p))).join('')
+
+// Whether a picked value is one the action offers: it goes into the command as a flag.
+export const isChoice = (a: Action, value: string) => !a.choice || a.choice.options.some(o => o.value === value)
+
 export function groupsFor(c: Commit, ctx: Context): Group[] {
   const current = ctx.branch ?? 'HEAD'
   const remote = ctx.remotes.includes('origin') ? 'origin' : ctx.remotes[0]

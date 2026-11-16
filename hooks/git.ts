@@ -1,10 +1,13 @@
 import type { Commit, Details, FileChange, FileDiff, GraphData, Operation, RemotesMode } from '../types'
+import { visibleText } from './actions'
 import { DATE, FORMAT, WORKING, merge, parseLog } from './graph'
 
 export type Run = (argv: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>
 
 const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 const MAX_DIFF = 90_000
+// A commit message longer than this would push the drawing past what the desktop app draws.
+const MAX_MESSAGE = 8_000
 // The pane reads on its own, every few seconds: a repository's own config must not run anything
 // then (core.fsmonitor on status, an external diff or textconv driver on diff).
 const git = (...args: string[]) => ['git', '-c', 'core.quotepath=false', '-c', 'core.fsmonitor=false', ...args]
@@ -43,7 +46,7 @@ export async function loadGraph(run: Run, limit: number, only: string | null = n
   if (log.exitCode !== 0) {
     const fail = (status: GraphData['status'], message: string): Graph => ({
       status,
-      message,
+      message: visibleText(message),
       commits: [],
       hasMore: false,
       remotes: [],
@@ -95,7 +98,8 @@ export async function loadGraph(run: Run, limit: number, only: string | null = n
       working,
     ),
     hasMore: all.length > limit,
-    remotes: remotes.stdout.split('\n').filter(Boolean),
+    // A remote named like an option (set in .git/config) would be read as one by push: left out.
+    remotes: remotes.stdout.split('\n').filter(r => r && !r.startsWith('-')),
     branch: branch.stdout.trim() || null,
     headHash,
     localBranches: branches.filter(r => r.startsWith('refs/heads/')).map(r => r.slice('refs/heads/'.length)),
@@ -173,7 +177,7 @@ export async function loadDetails(run: Run, c: Commit): Promise<Details> {
     c.kind === 'working' ? run(git('diff', ...SAFE_DIFF, '--name-only', '-z', '--diff-filter=U')) : none,
   ])
   const failed = [names, nums, info, untracked, unmerged].find(r => r.exitCode !== 0)
-  if (failed) return { ...emptyDetails(c.hash), status: 'error', message: failed.stderr.trim() }
+  if (failed) return { ...emptyDetails(c.hash), status: 'error', message: visibleText(failed.stderr.trim()) }
 
   const [author = '', email = '', date = '', parents = '', ...body] = info.stdout.split('\x1f')
   const files = parseChanges(names.stdout, nums.stdout)
@@ -184,7 +188,7 @@ export async function loadDetails(run: Run, c: Commit): Promise<Details> {
   return {
     hash: c.hash,
     status: 'ok',
-    message: c.kind === 'working' ? c.subject : body.join('\x1f').trim(),
+    message: clipMessage(visibleText(c.kind === 'working' ? c.subject : body.join('\x1f').trim())),
     author,
     email,
     date,
@@ -192,6 +196,11 @@ export async function loadDetails(run: Run, c: Commit): Promise<Details> {
     files,
   }
 }
+
+const clipMessage = (s: string) => (s.length > MAX_MESSAGE ? `${s.slice(0, MAX_MESSAGE)}\n… (message cut short)` : s)
+
+// The person's own ssh command, if git is set to one.
+export const sshCommand = (run: Run) => run(git('config', '--get', 'core.sshCommand')).then(r => r.stdout.trim(), () => '')
 
 export const emptyDetails = (hash: string): Details => ({
   hash,
@@ -212,7 +221,8 @@ export async function loadDiff(run: Run, c: Commit, file: FileChange): Promise<F
       : await run(git('diff', ...SAFE_DIFF, '-M', ...rangeOf(c), '--', ...paths))
   // --no-index exits 1 when the files differ, which they always do here.
   const ok = r.exitCode === 0 || (file.status === '?' && r.exitCode === 1)
-  const text = ok ? hunks(r.stdout) : r.stderr.trim()
+  // Shown only, never run: a diff or error may hold escapes that would rewrite the terminal.
+  const text = visibleText(ok ? hunks(r.stdout) : r.stderr.trim())
   // Cut at a hunk boundary: Code's diff format draws a hunk cut midway as plain text.
   const cut = text.length > MAX_DIFF ? text.lastIndexOf('\n@@', MAX_DIFF) + 1 || MAX_DIFF : text.length
   return {

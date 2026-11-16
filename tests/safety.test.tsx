@@ -3,7 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { describe, groupsFor } from '../hooks/actions'
+import { describe, groupsFor, isChoice, visibleText } from '../hooks/actions'
 import { branchOptions, fitDate, fitHash, rowFill } from '../hooks/register'
 import { WORKING } from '../hooks/graph'
 import { AUTO_LANES, CELL_PX, autoGraphCells, badges, fitGraph, graphWidth, layout, rowSvg } from '../hooks/graph'
@@ -25,10 +25,10 @@ const LOG =
 // A repository whose HEAD can be moved under the pane; every command is kept.
 function repo(on: On) {
   const s = {
-    head: 'fffffff1', status: '', files: '', reads: [] as string[][], ran: [] as string[],
+    head: 'fffffff1', status: '', files: '', sshCommand: '', info: 'Ada\x1fa@b.c\x1fdate\x1f\x1fFirst', reads: [] as string[][], ran: [] as string[],
     op: false, // a merge stopped on a conflict
     statusFails: false,
-    inits: [] as { timeoutMs?: number; stdin?: string }[], // what each action command was started with
+    inits: [] as { timeoutMs?: number; stdin?: string; env?: Record<string, string> }[], // what each action command was started with
     act: (_argv: readonly string[]): Promise<ReturnType<typeof ok>> | ReturnType<typeof ok> => ok(''),
   }
   on('command.register', () => ({ value: { command: 'gitview' } }))
@@ -38,7 +38,7 @@ function repo(on: On) {
     const a = e.argv.join(' ')
     if (e.argv[2] !== 'core.quotepath=false') {
       s.ran.push(a)
-      s.inits.push({ timeoutMs: e.init?.timeoutMs, stdin: e.init?.stdin })
+      s.inits.push({ timeoutMs: e.init?.timeoutMs, stdin: e.init?.stdin, env: e.init?.env as Record<string, string> | undefined })
       return s.act(e.argv)
     }
     if (a.includes('--verify MERGE_HEAD') && s.op) return ok('aaaaaaa1\n')
@@ -49,7 +49,8 @@ function repo(on: On) {
     if (a.includes('rev-parse HEAD')) return ok(`${s.head}\n`)
     if (a.endsWith(' remote')) return ok('origin\n')
     if (a.includes('symbolic-ref')) return ok('main\n')
-    if (a.includes(' show -s ')) return ok('Ada\x1fa@b.c\x1fdate\x1f\x1fFirst')
+    if (a.includes('core.sshCommand')) return ok(s.sshCommand)
+    if (a.includes(' show -s ')) return ok(s.info)
     if (a.includes('status --porcelain')) return ok(s.status)
     if (a.includes('--name-status')) return ok(s.files)
     return ok('')
@@ -390,6 +391,22 @@ test('bidi and zero-width characters in names are shown escaped, and run as they
   expect(describe(del.run!('', ''))).toBe("git tag -d 'safe<U+202E>live.sh'")
 })
 
+test('escapes and bidi characters from the repository never reach the drawing raw', async ($, on) => {
+  const s = repo(on)
+  s.info = 'Ev\x1b]52;c;aGk=\x07e\x1fe@x\u202e.y\x1fdate\x1f\x1fSubject\r\n\nBody \x1b[2J line'
+  s.files = 'M\0ev\x1b[31mil.txt\0'
+  await $.command.run(OPEN)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'c:ccccccc1' })
+  // What is drawn (a Button's key may hold the raw path; keys are never shown).
+  const tree = (await ui.find({ type: 'Box' }))!.text
+  expect(tree).not.toMatch(/[\x1b\x07\u202e]/)
+  expect(tree).toContain('<U+001B>')
+  expect(tree).toContain('<U+202E>')
+  expect(visibleText('a\tb\r\nc\x1b')).toBe('a\tb\nc<U+001B>')
+  await ui.unmount()
+})
+
 // Last: on Windows the module keeps git's placement for later reads.
 test('on Windows git starts in the system folder and is pointed at the repository', async ($, on) => {
   const seen: { argv: string[]; cwd?: string }[] = []
@@ -507,4 +524,53 @@ test('a wider graph column spreads the lanes across it', () => {
 test('the row fill stays inside the pane so the desktop draws no ellipsis', () => {
   expect(rowFill(120).length * 1.7).toBeLessThan(120)
   expect(rowFill(3).length).toBe(1)
+})
+
+test('a hard reset stops if files changed while its confirm box was open, even after a poll redrew', async ($, on) => {
+  const clock = mock.clock(on)
+  const s = repo(on)
+  await $.command.run(OPEN)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'c:ccccccc1' })
+  await pick(ui, 'ccccccc1', 'commit:reset')
+  s.status = ' M src/app.ts\n' // Claude edits a file with the Edit tool (no Bash call)
+  const polled = ui.press({ key: 'refresh' }) // what the 10 s poll does
+  await clock.advance(500)
+  await polled
+  await ui.press({ key: 'run:commit:reset' })
+  expect(await ui.find({ type: 'Text', text: /repository changed since this was shown/ })).toBeDefined()
+  expect(s.ran).toEqual([])
+  await ui.unmount()
+})
+
+for (const configured of ['', 'ssh -i ~/.ssh/work'])
+  test(`actions run ssh in batch mode unless ssh is set up its own way (${configured || 'default'})`, async ($, on) => {
+    const s = repo(on)
+    s.sshCommand = configured
+    await $.command.run(OPEN)
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    await ui.press({ key: 'c:ccccccc1' })
+    await pick(ui, 'ccccccc1', 'commit:revert')
+    await ui.press({ key: 'run:commit:revert' })
+    expect(s.ran.length).toBe(1)
+    expect(s.inits[0]!.env?.GIT_SSH_COMMAND).toBe(configured ? undefined : 'ssh -o BatchMode=yes')
+    await ui.unmount()
+  })
+
+test('a choice that is not one of the options is refused', () => {
+  const [c] = parseLog(LOG)
+  const reset = groupsFor(c!, { branch: 'main', headHash: 'ccccccc1', remotes: ['origin'], localBranches: ['main'] })[0]!.actions.find(a => a.id === 'commit:reset')!
+  expect(isChoice(reset, 'hard')).toBe(true)
+  expect(isChoice(reset, 'hard --exec=x')).toBe(false)
+})
+
+test('the command under a name field follows what is typed', async ($, on) => {
+  repo(on)
+  await $.command.run(OPEN)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'c:ccccccc1' })
+  await pick(ui, 'ccccccc1', 'commit:tag')
+  await ui.input({ key: 'input:commit:tag', text: 'v9', kind: 'change' })
+  expect(await ui.find({ type: 'Text', text: /git tag v9 ccccccc1/ })).toBeDefined()
+  await ui.unmount()
 })

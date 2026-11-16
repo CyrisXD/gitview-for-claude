@@ -117,10 +117,13 @@ Start a session in any git repository. The Gitview pane opens on its own. If you
 ## FAQ
 
 **Will it change my repository on its own?**
-No. Gitview only reads until you choose an action and press **Run**. Git's own prompts and editors are turned off (`GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`), so nothing ever hangs waiting for input.
+No. Gitview only reads until you choose an action and press **Run**. Git's own prompts and editors are turned off (`GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`), and ssh runs in batch mode unless you have set up your own ssh command, so a push or pull fails rather than waiting for a passphrase. If you sign commits with a gpg key that asks for a passphrase on the terminal, a merge, revert or cherry-pick from the pane can wait on it: use a graphical pinentry or a signing agent.
 
 **What if the repository changes while a confirm step is open?**
-Run reads the repository again first. If a branch, commit or stash moved since the step was shown (Claude or a terminal changed it), nothing runs and the pane redraws, so you never reset or drop something other than what you saw. Its automatic reads also ignore a repository's own fsmonitor, external diff and textconv settings, so opening a downloaded repository runs nothing from it.
+Run reads the repository again first. If a branch, commit or stash moved since the step was shown (Claude or a terminal changed it), nothing runs and the step says so, so you never reset or drop something other than what you saw. For a hard reset or a discard, edits to files since the step was shown stop it too.
+
+**Is it safe to open a repository I downloaded?**
+Gitview's automatic reads turn off a repository's fsmonitor, external diff and textconv settings, and names, messages and diffs from the repository are shown with control and direction-changing characters escaped. Git itself still follows other settings in `.git/config` (filter drivers, for example), so treat a `.git` folder from someone you don't trust the way you would with plain git.
 
 **What does Continue stage after a conflict?**
 Only the files that were in conflict, after checking none still holds conflict markers. Other edits in your working tree stay out of the commit.

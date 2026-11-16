@@ -34,6 +34,8 @@ export function replay(on: any, fx: Fixture, slow?: { clock: { sleep(ms: number)
     if (wait) await slow!.clock.sleep(wait)
     // The pane's reads all start `git -c core.quotepath=false`; an action's commands do not.
     if (e.argv[2] === 'core.quotepath=false') {
+      // Read once before the first action, after these fixtures were recorded: no core.sshCommand set.
+      if (e.argv.includes('core.sshCommand')) return value({ exitCode: 1, stdout: '', stderr: '' })
       const hit = fx.states[log.state]![key] ?? fx.states[log.state]![old]
       if (hit) return value(hit)
       log.missing.push(`state ${log.state}: ${e.argv.join(' ')}`)
