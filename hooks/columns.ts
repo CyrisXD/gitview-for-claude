@@ -17,16 +17,18 @@ const NAMES: Record<Col, string> = { graph: '', desc: 'Description', date: 'Date
 export const MIN = 4 // narrowest a column goes
 export const DESC_MIN = 12 // room Description keeps while it fills
 export const MAX = 200
+// Cells between columns: the divider, then a blank so the next head never touches it.
+export const GAP = 2
 
 // Each column's left edge and width, in order; the divider of a column is the gap cell at its right.
 export function columns(w: HeadProps['widths'], showDate: boolean, room: number) {
   const order: Col[] = showDate ? ['graph', 'desc', 'date', 'author', 'commit'] : ['graph', 'desc', 'author', 'commit']
-  const fixed = order.filter(c => c !== 'desc').reduce((n, c) => n + (w[c] as number) + 1, 0)
+  const fixed = order.filter(c => c !== 'desc').reduce((n, c) => n + (w[c] as number) + GAP, 0)
   let left = 0
   return order.map(col => {
-    const width = col === 'desc' ? (w.desc ?? Math.max(DESC_MIN, room - fixed - 1)) : (w[col] as number)
+    const width = col === 'desc' ? (w.desc ?? Math.max(DESC_MIN, room - fixed - GAP)) : (w[col] as number)
     const at = { col, left, width, divider: left + width }
-    left += width + 1
+    left += width + GAP
     return at
   })
 }
@@ -78,7 +80,7 @@ const Columns: ClientModule<HeadProps, State> = (props, s) => {
     children: columns(w, props.showDate, s.columns).flatMap(c => [
       // While dragged the head says its width: the desktop redraws the rows only on release.
       label(`${NAMES[c.col]}${c.col === st.drag ? ` · ${c.width}` : ''}`, { key: `head:${c.col}`, width: c.width }),
-      Box({ width: 1, flexShrink: 0, children: Text({ dimColor: c.col !== st.drag, bold: true, children: c.col === st.drag ? '┃' : '│' }) }),
+      Box({ width: GAP, flexShrink: 0, children: Text({ dimColor: c.col !== st.drag, bold: true, children: c.col === st.drag ? '┃' : '│' }) }),
     ]),
   })
 }

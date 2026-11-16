@@ -129,15 +129,14 @@ export const graphWidth = (lanes: number, lane: number = LANE) => PAD * 2 + (lan
 // there; 8 keeps the drawing inside its column, a little room to spare at most.
 export const CELL_PX = 8
 const MIN_GAP = 6
-const MAX_GAP = 26
 // The graph column's default width in cells: its lanes up to AUTO_LANES, compact once busy.
 export const autoGraphCells = (lanes: number, isTerminal: boolean) =>
   isTerminal ? Math.min(lanes, AUTO_LANES) * 2 : Math.ceil(graphWidth(Math.min(lanes, AUTO_LANES), lanes > 6 ? 10 : LANE) / CELL_PX)
 // A graph column `cells` wide, drawn: its width in px and the room between lanes, which grows with
-// the column up to MAX_GAP; lanes that do not fit at MIN_GAP are clipped at the right edge.
+// the column so the lanes always span it; lanes that do not fit at MIN_GAP are clipped at the right edge.
 export function fitGraph(lanes: number, cells: number) {
   const W = cells * CELL_PX
-  const gap = lanes > 1 ? Math.max(MIN_GAP, Math.min(MAX_GAP, (W - PAD * 2) / (lanes - 1))) : LANE
+  const gap = lanes > 1 ? Math.max(MIN_GAP, (W - PAD * 2) / (lanes - 1)) : LANE
   return { W, gap }
 }
 

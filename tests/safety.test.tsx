@@ -4,7 +4,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { describe, groupsFor } from '../hooks/actions'
-import { branchOptions, fitDate, fitHash } from '../hooks/register'
+import { branchOptions, fitDate, fitHash, rowFill } from '../hooks/register'
 import { WORKING } from '../hooks/graph'
 import { AUTO_LANES, CELL_PX, autoGraphCells, badges, fitGraph, graphWidth, layout, rowSvg } from '../hooks/graph'
 import { parseLog } from '../hooks/graph'
@@ -498,8 +498,13 @@ test('dates and hashes fit their columns', () => {
   expect(fitHash('66b570f1234', 4)).toBe('66b5')
 })
 
-test('a wider graph column spreads the lanes, up to a limit', () => {
+test('a wider graph column spreads the lanes across it', () => {
   expect(fitGraph(5, 10).gap).toBe((80 - 20) / 4)
-  expect(fitGraph(5, 40).gap).toBe(26)
+  expect(fitGraph(5, 40).gap).toBe((320 - 20) / 4)
   expect(fitGraph(30, 10).gap).toBe(6)
+})
+
+test('the row fill stays inside the pane so the desktop draws no ellipsis', () => {
+  expect(rowFill(120).length * 1.7).toBeLessThan(120)
+  expect(rowFill(3).length).toBe(1)
 })

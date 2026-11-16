@@ -3,7 +3,7 @@ import type { EngineInterface, Register, RenderInput } from 'claude-code'
 
 import type { ActionResult, Commit, Details, FileChange, FileDiff, GraphData, Pending, RefreshState, RemotesMode, View, Widths } from '../types'
 import { STAGE_LISTED, describe, groupsFor, visible } from './actions'
-import { MAX, MIN } from './columns'
+import { GAP, MAX, MIN } from './columns'
 import type { Action } from './actions'
 import { emptyDetails, fingerprint, loadDetails, loadDiff, loadGraph } from './git'
 import type { Run } from './git'
@@ -17,7 +17,10 @@ const PAGE = 200
 // drew, 153 did not), so rows are drawn in windows that stay under this.
 const BUDGET = 90_000
 const HOVER = '#8987811f' // the app's warm grey, faint: a row under the pointer
-const ROW_FILL = '\u2003'.repeat(120) // em spaces: wider than any pane, clipped to the row
+// Em spaces filling a row's click target. Wider than the row, the desktop truncates the Button's
+// text with a visible "…", so the fill stops just short of the pane's width (an em is about 1.7 cells).
+// ponytail: estimated em width; a cell or two at the right edge may miss the target.
+export const rowFill = (columns: number) => '\u2003'.repeat(Math.max(1, Math.floor(columns / 1.7) - 1))
 const NONE = '-' // a group dropdown's first entry: its title, no action
 // Files drawn in an opened commit: every one would push a big commit's drawing past what the app shows.
 const MAX_FILES = 100
@@ -990,7 +993,7 @@ async function drawPane($: EngineInterface, e: RenderInput) {
   const columnHeads = Client ? (
     <Client key="columns" module="./columns.ts" props={{ widths: { ...w, graph: gcells }, showDate }} height={1} flexGrow={1} />
   ) : (
-    <Box flexDirection="row" gap={1}>
+    <Box flexDirection="row" gap={GAP}>
       {graphHead}
       {
         [
@@ -1004,6 +1007,8 @@ async function drawPane($: EngineInterface, e: RenderInput) {
           head('Commit', w.commit),
         ]
       }
+      {/* The rows end with GAP cells after Commit, so the heads do too. */}
+      <Box width={0} flexShrink={0} />
     </Box>
   )
 
@@ -1029,7 +1034,7 @@ async function drawPane($: EngineInterface, e: RenderInput) {
     )
   const rowOf = (c: Commit, r: number) => (
     <Box flexDirection="column">
-      <Box key={`row:${c.hash}`} flexDirection="row" alignItems="center" gap={1} overflow="hidden" hover={{ backgroundColor: HOVER }}>
+      <Box key={`row:${c.hash}`} flexDirection="row" alignItems="center" gap={GAP} overflow="hidden" hover={{ backgroundColor: HOVER }}>
         <Box width={gcells} flexShrink={0} overflow="hidden">
           {graphCell(r)}
         </Box>
@@ -1042,13 +1047,14 @@ async function drawPane($: EngineInterface, e: RenderInput) {
         <Box width={w.author} flexShrink={0} overflow="hidden" height={oneRow}>
           {cell(c, 'author', c.author)}
         </Box>
-        <Box width={w.commit} flexShrink={0} overflow="hidden" height={oneRow}>
+        {/* marginRight matches the heads' divider after Commit, or Description fills GAP cells more here than in the heads. */}
+        <Box width={w.commit} flexShrink={0} overflow="hidden" height={oneRow} marginRight={GAP}>
           {cell(c, 'hash', c.kind === 'working' ? '*' : fitHash(c.hash, w.commit), { mono: true })}
         </Box>
         {overlay && (
           <Box position="absolute" top={0} left={0} right={0} bottom={0} overflow="hidden">
             <Button key={`c:${c.hash}:row`} plain onPress={() => void selectCommit($, c.hash)}>
-              {ROW_FILL}
+              {rowFill(width)}
             </Button>
           </Box>
         )}

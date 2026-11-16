@@ -19,7 +19,7 @@ import stashPop from './fixtures/stash-pop'
 import stashPopIndex from './fixtures/stash-pop-index'
 import stashPush from './fixtures/stash-push'
 import tags from './fixtures/tags'
-import { columns, dragTo } from '../hooks/columns'
+import { columns, dragTo, GAP } from '../hooks/columns'
 import { WIDTHS, shortDate } from '../hooks/register'
 import { badgeStyle, badgeSvg } from '../hooks/graph'
 import { PANE, act, badge, dump, goTo, replay, findAction, pick } from './replay'
@@ -454,7 +454,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
       await ui.pointer({ type: 'move', x: to, y: 0, button: 'left', in: 'columns' })
       await ui.pointer({ type: 'up', x: to, y: 0, button: 'left', in: 'columns' })
     }
-    const sum = (w: Record<string, number>) => COLS.reduce((n, c) => n + w[c]!, 0) + COLS.length
+    const sum = (w: Record<string, number>) => COLS.reduce((n, c) => n + w[c]!, 0) + COLS.length * GAP
     let w = await drawn(ui)
     expect({ date: w.date, author: w.author, commit: w.commit }).toEqual({ date: 17, author: 14, commit: 9 })
     expect(sum(w)).toBe(114) // Description fills: the columns and their dividers span the Client's 114 cells
